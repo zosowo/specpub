@@ -145,7 +145,7 @@ def run(date_str: str, total: int = TOTAL_PER_DAY):
             f'⚠️ *[스펙분석소] generate.py 경고*\n'
             f'오늘 큐 생성 0개\n'
             f'남은 제품: {remaining_products}개 / 남은 기술 주제: {remaining_topics}개\n'
-            f'catalog\_updater.py 실행 또는 카탈로그 추가 필요'
+            f'catalog_updater.py 실행 또는 카탈로그 추가 필요'
         )
 
     return len(queue_items)

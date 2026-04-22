@@ -296,7 +296,8 @@ def upload_image_from_url(image_url: str, alt_text: str = '') -> int:
         mime = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
                 'png': 'image/png', 'webp': 'image/webp'}.get(ext, 'image/jpeg')
 
-        safe_name = re.sub(r'[^\w\-]', '_', alt_text)[:60]
+        safe_name = re.sub(r'[^\x00-\x7F]', '', alt_text)  # ASCII만 남기기
+        safe_name = re.sub(r'[^\w\-]', '_', safe_name)[:60] or 'image'
         headers = {
             'Authorization':       HEADERS['Authorization'],
             'Content-Type':        mime,

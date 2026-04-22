@@ -82,10 +82,36 @@ def run():
                 f"*대기 중:* {qm.queue_count() - 1}개"
             )
         elif item['type'] == 'trend':
-            url = wp.publish_trend_post(title, slug, html)
+            is_hot = bool(item.get('is_hot'))
+            url, post_id = wp.publish_trend_post(title, slug, html, is_hot=is_hot)
+
+            # 인기 태그 붙은 경우 만료일을 keyword_history 에 기록
+            if is_hot and post_id:
+                try:
+                    import json
+                    from datetime import datetime, timedelta
+                    from trend_generator import KW_HIST_F, PIN_DAYS
+                    if os.path.exists(KW_HIST_F):
+                        with open(KW_HIST_F, encoding='utf-8') as f:
+                            hist = json.load(f)
+                        expiry = (datetime.now() + timedelta(days=PIN_DAYS)).date().isoformat()
+                        for kw in item.get('keywords', []):
+                            if kw in hist:
+                                hist[kw]['post_id']    = post_id
+                                hist[kw]['pin_expiry'] = expiry
+                        tmp = KW_HIST_F + '.tmp'
+                        with open(tmp, 'w', encoding='utf-8') as f:
+                            json.dump(hist, f, ensure_ascii=False, indent=2)
+                        os.replace(tmp, KW_HIST_F)
+                except Exception as e:
+                    log.warning(f'pin_expiry 기록 실패: {e}')
+
+            hot_suffix = ' (인기·고정)' if is_hot else ''
+            score_line = f"\n*점수:* {item.get('score', 0)}" if 'score' in item else ''
             msg = (
-                f"🔥 *[스펙분석소] 트렌드 발행 완료*\n\n"
-                f"*제목:* {_escape(title)}\n"
+                f"🔥 *[스펙분석소] 트렌드 발행 완료{hot_suffix}*\n\n"
+                f"*제목:* {_escape(title)}"
+                f"{score_line}\n"
                 f"*링크:* {url}\n"
                 f"*대기 중:* {qm.queue_count() - 1}개"
             )

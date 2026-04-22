@@ -542,8 +542,12 @@ def publish_tech_post(title: str, slug: str, content_html: str) -> str:
     return r.json().get('link', '')
 
 
-def publish_trend_post(title: str, slug: str, content_html: str) -> str:
-    """트렌드 카테고리 포스트 발행."""
+def publish_trend_post(title: str, slug: str, content_html: str,
+                       is_hot: bool = False) -> tuple[str, int]:
+    """트렌드 카테고리 포스트 발행. is_hot=True 일 때 '인기' 태그 + sticky=True.
+
+    Returns: (url, post_id)
+    """
     # 카테고리 slug='trend' 조회, 없으면 생성
     r = requests.get(_api('categories'), params={'slug': 'trend'}, headers=HEADERS, timeout=10)
     items = r.json()
@@ -574,7 +578,9 @@ def publish_trend_post(title: str, slug: str, content_html: str) -> str:
     import re as _re
     words = _re.sub(r'[^\w\s가-힣]', ' ', title).split()
     tag_names = [w for w in words if len(w) >= 2][:3] + ['트렌드']
-    tag_ids   = _get_or_create_tags(tag_names)
+    if is_hot:
+        tag_names.append('인기')
+    tag_ids = _get_or_create_tags(tag_names)
 
     payload = {
         'title':      title,
@@ -586,10 +592,13 @@ def publish_trend_post(title: str, slug: str, content_html: str) -> str:
     }
     if media_id:
         payload['featured_media'] = media_id
+    if is_hot:
+        payload['sticky'] = True
 
     r = requests.post(_api('posts'), json=payload, headers=HEADERS, timeout=30)
     r.raise_for_status()
-    return r.json().get('link', '')
+    data = r.json()
+    return data.get('link', ''), int(data.get('id', 0))
 
 
 def post_exists(slug: str, post_type: str = 'posts') -> bool:

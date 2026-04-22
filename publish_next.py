@@ -81,6 +81,14 @@ def run():
                 f"*링크:* {url}\n"
                 f"*대기 중:* {qm.queue_count() - 1}개"
             )
+        elif item['type'] == 'trend':
+            url = wp.publish_trend_post(title, slug, html)
+            msg = (
+                f"🔥 *[스펙분석소] 트렌드 발행 완료*\n\n"
+                f"*제목:* {_escape(title)}\n"
+                f"*링크:* {url}\n"
+                f"*대기 중:* {qm.queue_count() - 1}개"
+            )
         else:
             url = wp.publish_tech_post(title, slug, html)
             msg = (

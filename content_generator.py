@@ -136,3 +136,37 @@ def verify_tech_content(html: str) -> tuple[bool, str]:
     if '쿠팡' in html or '구매하기' in html:
         return False, '광고성 문구 포함'
     return True, ''
+
+
+# ──────────────────────────────────────────────────────────
+# 트렌드 글
+# ──────────────────────────────────────────────────────────
+
+def generate_trend_post(topic: dict) -> str:
+    """트렌드 주제로 시의성 있는 블로그 포스트 HTML 생성."""
+    context = topic.get('context', '')
+    prompt = f"""다음 IT/전자기기 트렌드 주제로 시의성 있는 블로그 포스트 본문을 한국어 HTML로 작성해줘.
+
+주제: {topic['title']}
+컨텍스트: {context}
+
+조건:
+- 순수 HTML만 출력 (```html 마크다운 블록 없이)
+- <h2>부터 시작 (제목 태그 없이)
+- 구성: 현황 요약 (<h2>) → 배경/원인 (<h2>) → 소비자 관점 영향 (<h2>) → 전망 한 줄 정리
+- 팩트 기반, 가능하면 구체적 제품·기업·수치 언급
+- 특정 기업의 광고성 문구, 구매 유도 문구 금지
+- 면책 안내문 포함하지 말 것 (템플릿에서 자동 추가)
+- 분량: 700~1000자 한국어
+"""
+    return _run_claude(prompt)
+
+
+def verify_trend_content(html: str) -> tuple[bool, str]:
+    if len(html) < 400:
+        return False, f'본문이 너무 짧음 ({len(html)}자)'
+    if not re.search(r'<h2', html, re.IGNORECASE):
+        return False, 'H2 섹션 없음'
+    if '쿠팡' in html or '구매하기' in html or '최저가' in html:
+        return False, '광고성 문구 포함'
+    return True, ''

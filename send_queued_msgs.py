@@ -62,6 +62,14 @@ def build_summary() -> str:
     else:
         lines.append('• 뉴스 스캔: ⚠️ 실행 기록 없음')
 
+    tr = stats.get('trend')
+    if tr:
+        lines.append(
+            f'• 트렌드 생성: {tr["saved"]}개 (기사 {tr["articles"]}건 → 주제 {tr["topics"]}개)'
+        )
+    else:
+        lines.append('• 트렌드 생성: ⚠️ 실행 기록 없음')
+
     prods, topics = _remaining_stock()
     spec_days = prods  // 5  if prods  else 0
     tech_days = topics // 10 if topics else 0

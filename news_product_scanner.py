@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 
 import psycopg2
 import requests
+import telegram_utils as tg
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
@@ -207,16 +208,7 @@ def add_to_upcoming(brand: str, model: str, category: str):
 # ── 텔레그램 ──────────────────────────────────────────────
 
 def send_telegram(msg: str):
-    if not BOT_TOKEN or not CHAT_ID:
-        return
-    try:
-        requests.post(
-            f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
-            json={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'},
-            timeout=10,
-        )
-    except Exception as e:
-        log.warning(f'텔레그램 전송 실패: {e}')
+    tg.send(msg)
 
 
 # ── 메인 ─────────────────────────────────────────────────

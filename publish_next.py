@@ -5,38 +5,17 @@
 import os
 import sys
 import logging
-import requests
 from dotenv import load_dotenv
 
 import queue_manager as qm
+import telegram_utils as tg
 import wp_publisher as wp
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-CHAT_ID   = os.getenv('TELEGRAM_CHAT_ID')
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger(__name__)
 
-
-def send_telegram(msg: str):
-    if not BOT_TOKEN or not CHAT_ID:
-        return
-    try:
-        resp = requests.post(
-            f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
-            json={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'},
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            requests.post(
-                f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
-                json={'chat_id': CHAT_ID, 'text': msg},
-                timeout=10,
-            )
-    except Exception as e:
-        log.warning(f'텔레그램 전송 실패: {e}')
 
 
 def _escape(text: str) -> str:
@@ -113,12 +92,12 @@ def run():
 
         qm.mark_published(slug)
         qm.delete_queue_file(path)
-        send_telegram(msg)
+        tg.send(msg)
         log.info(f'발행 완료: {title} → {url}')
 
     except Exception as e:
         log.error(f'발행 실패: {title} — {e}')
-        send_telegram(f'⚠️ *[스펙분석소] 발행 실패*\n{_escape(title)}\n`{e}`')
+        tg.send(f'⚠️ *[스펙분석소] 발행 실패*\n{_escape(title)}\n`{e}`')
 
 
 if __name__ == '__main__':

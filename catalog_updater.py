@@ -22,10 +22,10 @@ import subprocess
 from datetime import date
 from dotenv import load_dotenv
 
+import telegram_utils as tg
+
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
-BOT_TOKEN  = os.getenv('TELEGRAM_BOT_TOKEN')
-CHAT_ID    = os.getenv('TELEGRAM_CHAT_ID')
 CLAUDE_BIN = '/home/zosowo/.nvm/versions/node/v24.14.0/bin/claude'
 CATALOG_PY = os.path.join(os.path.dirname(__file__), 'catalog.py')
 
@@ -40,17 +40,7 @@ _UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0 Safari/53
 # ──────────────────────────────────────────────────────────
 
 def send_telegram(msg: str):
-    if not BOT_TOKEN or not CHAT_ID:
-        log.warning('텔레그램 미설정')
-        return
-    try:
-        requests.post(
-            f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
-            json={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'},
-            timeout=10,
-        )
-    except Exception as e:
-        log.warning(f'텔레그램 전송 실패: {e}')
+    tg.send(msg)
 
 
 # ──────────────────────────────────────────────────────────

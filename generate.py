@@ -9,7 +9,6 @@
 import os
 import argparse
 import logging
-import requests
 import random
 from datetime import date
 from dotenv import load_dotenv
@@ -17,11 +16,9 @@ from dotenv import load_dotenv
 import catalog
 import content_generator as cg
 import queue_manager as qm
+import telegram_utils as tg
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
-
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-CHAT_ID   = os.getenv('TELEGRAM_CHAT_ID')
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger(__name__)
@@ -31,17 +28,6 @@ TECH_PER_DAY  = 10
 TOTAL_PER_DAY = SPEC_PER_DAY + TECH_PER_DAY
 
 
-def _send_telegram(msg: str):
-    if not BOT_TOKEN or not CHAT_ID:
-        return
-    try:
-        requests.post(
-            f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
-            json={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'},
-            timeout=10,
-        )
-    except Exception:
-        pass
 
 
 def pick_spec_products(n: int) -> list:
@@ -141,7 +127,7 @@ def run(date_str: str, total: int = TOTAL_PER_DAY):
     if len(queue_items) == 0:
         remaining_products = len([p for p in catalog.PRODUCTS if not qm.is_published(p['slug'])])
         remaining_topics   = len([t for t in catalog.TECH_TOPICS if not qm.is_published(t['slug'])])
-        _send_telegram(
+        tg.send(
             f'⚠️ *[스펙분석소] generate.py 경고*\n'
             f'오늘 큐 생성 0개\n'
             f'남은 제품: {remaining_products}개 / 남은 기술 주제: {remaining_topics}개\n'

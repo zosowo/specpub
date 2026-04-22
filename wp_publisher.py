@@ -122,10 +122,15 @@ def _ddg_search_urls(query: str, limit: int = 3) -> list[str]:
         return []
 
 
+def _is_usable_image(url: str) -> bool:
+    """SVG·GIF 제외, 실제 래스터 이미지만 허용."""
+    low = url.lower().split('?')[0]
+    return bool(url) and not low.endswith('.svg') and not low.endswith('.gif')
+
+
 def _wikipedia_image(query: str, brand: str = '') -> str:
-    """Wikipedia 검색 API로 제품 이미지 URL 반환. 브랜드/모델 매칭 검증 포함."""
+    """Wikipedia 검색 API로 제품 이미지 URL 반환. SVG 제외."""
     try:
-        # 1단계: 상위 3개 결과 검색
         sr = requests.get(
             'https://en.wikipedia.org/w/api.php',
             params={
@@ -142,35 +147,32 @@ def _wikipedia_image(query: str, brand: str = '') -> str:
         if not results:
             return ''
 
-        # 쿼리 키워드 (브랜드 + 모델 단어들)
         query_words = set(query.lower().split())
         if brand:
             query_words.add(brand.lower())
 
-        # 제목에 쿼리 키워드가 1개 이상 포함된 결과만 사용
         title = ''
         for result in results:
             t = result['title']
-            title_words = set(t.lower().split())
-            if query_words & title_words:  # 교집합이 있으면 관련 문서
+            if query_words & set(t.lower().split()):
                 title = t
                 break
-
         if not title:
             return ''
 
-        # 2단계: 썸네일 이미지 가져오기
         ir = requests.get(
             'https://en.wikipedia.org/api/rest_v1/page/summary/' + title.replace(' ', '_'),
             headers={'User-Agent': _UA},
             timeout=8,
         )
         summary = ir.json()
-        thumb = summary.get('originalimage', {}).get('source', '') or \
-                summary.get('thumbnail', {}).get('source', '')
-        if thumb:
-            log.info(f'Wikipedia 이미지: {title} → {thumb[:80]}')
-        return thumb
+        # originalimage 우선, thumbnail 폴백 — SVG 제외
+        for key in ('originalimage', 'thumbnail'):
+            thumb = summary.get(key, {}).get('source', '')
+            if thumb and _is_usable_image(thumb):
+                log.info(f'Wikipedia 이미지: {title} → {thumb[:80]}')
+                return thumb
+        return ''
     except Exception as e:
         log.warning(f'Wikipedia 검색 실패: {e}')
         return ''
@@ -220,10 +222,57 @@ def fetch_web_image_url(model: str, brand: str) -> str:
     for query in queries:
         for url in _ddg_search_urls(query, limit=3):
             img = _extract_og_image(url)
-            if img and not img.endswith('.gif'):
+            if img and _is_usable_image(img):
                 log.info(f'웹 OG 이미지: {img[:80]} (from {url[:60]})')
                 return img
 
+    return ''
+
+
+# ──────────────────────────────────────────────────────────
+# Unsplash 이미지 검색 (Pixabay 다음 최후 폴백)
+# ──────────────────────────────────────────────────────────
+
+_UNSPLASH_QUERIES = {
+    'smartphone':     'smartphone',
+    'laptop':         'laptop computer',
+    'tablet':         'tablet technology',
+    'earphone':       'headphones earphones',
+    'smartwatch':     'smartwatch',
+    'tv':             'television screen',
+    'monitor':        'computer monitor',
+    'camera':         'camera photography',
+    'gaming_console': 'gaming controller',
+    'speaker':        'speaker audio',
+    'refrigerator':   'refrigerator kitchen',
+    'washing_machine':'laundry washing machine',
+    'air_conditioner':'air conditioner',
+    'air_purifier':   'air purifier clean',
+    'robot_vacuum':   'robot vacuum',
+    'vacuum':         'vacuum cleaner',
+    'microwave':      'microwave oven',
+    'hair_dryer':     'hair dryer',
+    'electric_shaver':'electric shaver',
+    'food_processor': 'kitchen appliance',
+}
+
+
+def _fetch_unsplash_image(category: str) -> str:
+    """Unsplash Source API (무료, 키 불필요) — 카테고리별 고화질 사진."""
+    query = _UNSPLASH_QUERIES.get(category, 'technology gadget')
+    try:
+        r = requests.get(
+            f'https://source.unsplash.com/800x600/?{query.replace(" ", ",")}',
+            headers={'User-Agent': _UA},
+            timeout=12,
+            allow_redirects=True,
+        )
+        url = r.url
+        if url and _is_usable_image(url) and r.status_code == 200:
+            log.info(f'Unsplash 이미지: {url[:80]}')
+            return url
+    except Exception as e:
+        log.warning(f'Unsplash 실패: {e}')
     return ''
 
 
@@ -267,16 +316,22 @@ def fetch_pixabay_image_url(product: dict) -> str:
 
 
 def _get_image_url(product: dict) -> str:
-    """우선순위: 웹 검색 → Pixabay."""
-    model = product.get('model', '')
-    brand = product.get('brand', '')
+    """우선순위: 웹 검색 → Pixabay → Unsplash."""
+    model    = product.get('model', '')
+    brand    = product.get('brand', '')
+    category = product.get('category', 'smartphone')
 
     img = fetch_web_image_url(model, brand)
     if img:
         return img
 
     log.info(f'웹 이미지 없음, Pixabay 폴백: {model}')
-    return fetch_pixabay_image_url(product)
+    img = fetch_pixabay_image_url(product)
+    if img:
+        return img
+
+    log.info(f'Pixabay 없음, Unsplash 폴백: {model}')
+    return _fetch_unsplash_image(category)
 
 
 # ──────────────────────────────────────────────────────────

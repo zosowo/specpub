@@ -328,6 +328,14 @@ def run():
     else:
         log.info(f'신제품 감지 없음 (후보 {len(candidates)}건 중 신제품 0건)')
 
+    tg.record_stats('news_scan', {
+        'articles':    len(articles),
+        'candidates':  len(candidates),
+        'added':       len(added_products),
+        'upcoming':    len(upcoming_added),
+        'not_product': not_product_news,
+    })
+
     log.info(f'완료: 직접추가={len(added_products)}, 대기={len(upcoming_added)}, 비신제품={not_product_news}')
 
 

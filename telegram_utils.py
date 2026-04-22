@@ -16,6 +16,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 BOT_TOKEN  = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID    = os.getenv('TELEGRAM_CHAT_ID')
 PENDING_F  = os.path.join(os.path.dirname(__file__), 'pending_telegram.json')
+STATS_F    = os.path.join(os.path.dirname(__file__), 'night_stats.json')
 
 log = logging.getLogger(__name__)
 
@@ -71,3 +72,20 @@ def send(msg: str):
         _queue_msg(msg)
     else:
         _do_send(msg)
+
+
+def record_stats(section: str, data: dict):
+    """야간 작업 통계를 night_stats.json에 기록. 07:00 send_queued_msgs가 요약 전송."""
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        stats = {}
+        if os.path.exists(STATS_F):
+            with open(STATS_F, encoding='utf-8') as f:
+                stats = json.load(f)
+        if stats.get('date') != today:
+            stats = {'date': today}
+        stats[section] = data
+        with open(STATS_F, 'w', encoding='utf-8') as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.warning(f'야간 stats 기록 실패: {e}')

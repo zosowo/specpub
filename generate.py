@@ -123,6 +123,10 @@ def run(date_str: str, total: int = TOTAL_PER_DAY):
 
     log.info(f'큐 저장 완료: {len(queue_items)}개 → queue/{date_str}/')
 
+    specs  = len([i for i in queue_items if i['type'] == 'spec'])
+    topics = len([i for i in queue_items if i['type'] == 'tech'])
+    tg.record_stats('generate', {'specs': specs, 'topics': topics, 'total': len(queue_items)})
+
     # 0개 생성 시 텔레그램 알림
     if len(queue_items) == 0:
         remaining_products = len([p for p in catalog.PRODUCTS if not qm.is_published(p['slug'])])

@@ -387,15 +387,97 @@ def get_or_create_term(name: str, taxonomy: str) -> int:
 # 발행
 # ──────────────────────────────────────────────────────────
 
+# 기술 주제 키워드 → Pixabay 이미지 쿼리 매핑
+_TECH_IMAGE_QUERIES = {
+    'oled': 'OLED display screen',
+    'amoled': 'OLED display screen',
+    '디스플레이': 'display screen technology',
+    '주사율': 'gaming monitor display',
+    'ltpo': 'smartwatch display',
+    '배터리': 'battery charging technology',
+    '충전': 'wireless charging',
+    '5g': '5G network mobile',
+    'wifi': 'wifi router network',
+    '블루투스': 'bluetooth wireless',
+    'usb': 'USB cable connector',
+    '프로세서': 'computer processor chip',
+    '칩': 'semiconductor chip',
+    'cpu': 'computer processor',
+    'gpu': 'graphics card GPU',
+    'ram': 'computer memory RAM',
+    '카메라': 'camera lens photography',
+    '센서': 'camera sensor photography',
+    '화소': 'camera photography',
+    '손떨림': 'camera stabilization',
+    '노이즈': 'audio sound wave',
+    'anc': 'headphones noise cancelling',
+    '공간음향': 'spatial audio headphones',
+    '돌비': 'home theater audio',
+    'hdr': 'HDR display television',
+    '냉각': 'cooling fan heat',
+    '방열': 'cooling technology',
+    '방수': 'waterproof electronics',
+    '재활용': 'recycling sustainability green',
+    '친환경': 'eco friendly sustainable green',
+    '에너지': 'energy efficiency solar',
+    '인버터': 'air conditioner inverter',
+    '필터': 'air filter purifier',
+    '흡입': 'vacuum cleaner',
+    '로봇': 'robot vacuum smart home',
+    '세탁': 'washing machine laundry',
+    '냉장': 'refrigerator kitchen',
+    '헤어': 'hair dryer beauty',
+    '면도': 'electric shaver grooming',
+    '음식물': 'food waste kitchen',
+    '전자레인지': 'microwave oven kitchen',
+}
+
+import random as _random
+
+def _tech_image_query(title: str, slug: str) -> str:
+    """제목/슬러그 키워드로 적절한 Pixabay 쿼리 반환."""
+    text = (title + ' ' + slug).lower()
+    for keyword, query in _TECH_IMAGE_QUERIES.items():
+        if keyword in text:
+            return query
+    return 'technology gadget modern'
+
+
+def _get_or_create_tags(tag_names: list[str]) -> list[int]:
+    """태그명 목록 → WP 태그 ID 목록."""
+    ids = []
+    for name in tag_names:
+        if not name.strip():
+            continue
+        try:
+            ids.append(get_or_create_term(name.strip(), 'tags'))
+        except Exception:
+            pass
+    return ids
+
+
 def publish_spec_post(product: dict, content_html: str) -> str:
     """product CPT로 스펙 분석 글 발행. 반환: 발행 URL"""
     type_id  = get_or_create_term(product['category'], 'device_type')
 
-    # 웹 검색 → Pixabay 순서로 이미지 확보
     media_id = 0
     img_url  = _get_image_url(product)
     if img_url:
         media_id = upload_image_from_url(img_url, product['model'])
+
+    # 태그: 브랜드 + 카테고리 한글명
+    _cat_kr = {
+        'smartphone':'스마트폰','laptop':'노트북','tablet':'태블릿',
+        'earphone':'이어폰','smartwatch':'스마트워치','tv':'TV',
+        'monitor':'모니터','camera':'카메라','gaming_console':'게임콘솔',
+        'speaker':'스피커','refrigerator':'냉장고','washing_machine':'세탁기',
+        'air_conditioner':'에어컨','air_purifier':'공기청정기',
+        'robot_vacuum':'로봇청소기','vacuum':'청소기','microwave':'전자레인지',
+        'hair_dryer':'헤어드라이어','electric_shaver':'전기면도기',
+        'food_processor':'음식물처리기',
+    }
+    tag_names = [product['brand'], _cat_kr.get(product['category'], product['category']), '스펙분석']
+    tag_ids   = _get_or_create_tags(tag_names)
 
     payload = {
         'title':       product['model'],
@@ -403,6 +485,7 @@ def publish_spec_post(product: dict, content_html: str) -> str:
         'content':     content_html,
         'status':      'publish',
         'device_type': [type_id],
+        'tags':        tag_ids,
         'meta': {
             '_specs':        product['specs'],
             '_release_year': product.get('release_year', ''),
@@ -420,23 +503,28 @@ def publish_tech_post(title: str, slug: str, content_html: str) -> str:
     """기술정보 일반 포스트 발행."""
     cat_id = get_or_create_term('기술정보', 'categories')
 
-    # 기술 글: technology 일반 이미지 (Pixabay만으로 충분)
+    # 주제별 이미지 쿼리
     media_id = 0
-    tech_product = {'brand': '', 'category': 'smartphone', 'model': slug}
+    query = _tech_image_query(title, slug)
     try:
-        import random
         r = requests.get(
             'https://pixabay.com/api/',
-            params={'key': PIXABAY_KEY, 'q': 'technology', 'image_type': 'photo',
+            params={'key': PIXABAY_KEY, 'q': query, 'image_type': 'photo',
                     'orientation': 'horizontal', 'per_page': 10, 'safesearch': 'true'},
             timeout=10,
         )
         hits = r.json().get('hits', [])
         if hits:
-            img_url  = random.choice(hits).get('webformatURL', '')
+            img_url  = _random.choice(hits).get('webformatURL', '')
             media_id = upload_image_from_url(img_url, slug)
     except Exception:
         pass
+
+    # 제목에서 2~3개 핵심어 태그 추출 (괄호·특수문자 제거)
+    import re as _re
+    words = _re.sub(r'[^\w\s가-힣]', ' ', title).split()
+    tag_names = [w for w in words if len(w) >= 2][:3] + ['기술정보']
+    tag_ids   = _get_or_create_tags(tag_names)
 
     payload = {
         'title':      title,
@@ -444,6 +532,7 @@ def publish_tech_post(title: str, slug: str, content_html: str) -> str:
         'content':    content_html,
         'status':     'publish',
         'categories': [cat_id],
+        'tags':       tag_ids,
     }
     if media_id:
         payload['featured_media'] = media_id

@@ -1,11 +1,34 @@
 """Claude CLI를 통한 콘텐츠 생성 — 스펙분석 / 기술정보."""
 import subprocess
-import json
 import re
 
 
 CLAUDE_BIN = '/home/zosowo/.nvm/versions/node/v24.14.0/bin/claude'
 MODEL = 'claude-sonnet-4-6'
+
+# 카테고리별 검증 대상 스펙 키 (본문에 언급되어야 하는 핵심 수치)
+_KEY_SPECS_BY_CATEGORY = {
+    'smartphone':     ('chip', 'ram', 'battery', 'main_camera'),
+    'laptop':         ('cpu', 'ram', 'storage', 'display_size'),
+    'tablet':         ('chip', 'ram', 'battery', 'display_size'),
+    'earphone':       ('driver_size', 'battery', 'anc', 'type'),
+    'smartwatch':     ('battery', 'display_size', 'gps', 'health_features'),
+    'tv':             ('display_size', 'display_panel', 'refresh_rate', 'resolution'),
+    'monitor':        ('display_size', 'refresh_rate', 'response_time', 'display_panel'),
+    'camera':         ('megapixel', 'sensor_size', 'video_max', 'af_system'),
+    'gaming_console': ('cpu', 'gpu', 'storage', 'resolution_max'),
+    'speaker':        ('power', 'frequency', 'connectivity', 'driver_size'),
+    'refrigerator':   ('capacity', 'energy_grade', 'type', 'compressor'),
+    'washing_machine':('capacity', 'energy_grade', 'rpm', 'type'),
+    'air_conditioner':('cooling_capacity', 'energy_grade', 'inverter', 'noise'),
+    'air_purifier':   ('coverage', 'filter_type', 'cadr', 'noise'),
+    'robot_vacuum':   ('suction', 'navigation', 'battery', 'mop'),
+    'vacuum':         ('suction', 'battery', 'weight', 'filtration'),
+    'microwave':      ('capacity', 'power', 'inverter', 'grill'),
+    'hair_dryer':     ('power', 'heat_settings', 'ion', 'weight'),
+    'electric_shaver':('shaving_type', 'waterproof', 'battery', 'cleaning_station'),
+    'food_processor': ('type', 'capacity', 'power', 'deodorization'),
+}
 
 
 def _run_claude(prompt: str) -> str:
@@ -74,26 +97,33 @@ def generate_tech_post(topic: dict) -> str:
 def verify_spec_content(product: dict, html: str) -> tuple[bool, str]:
     """
     생성된 스펙 글이 팩트 기반인지 기본 검증.
+    카테고리별 핵심 스펙 키를 사용하므로 가전제품도 정확히 검증.
     반환: (통과 여부, 실패 이유)
     """
     if len(html) < 300:
         return False, f'본문이 너무 짧음 ({len(html)}자)'
     if not re.search(r'<h2', html, re.IGNORECASE):
         return False, 'H2 섹션 없음'
-
-    # 핵심 스펙 수치가 본문에 언급되는지 확인
-    key_checks = []
-    for key in ('ram', 'battery', 'chip', 'cpu'):
-        val = product['specs'].get(key, '')
-        if val:
-            key_checks.append(val.split('/')[0].strip())
-
-    missing = [v for v in key_checks if v and v not in html]
-    if len(missing) > len(key_checks) // 2:
-        return False, f'핵심 스펙 수치 누락: {missing}'
-
     if '쿠팡' in html or '구매하기' in html or '최저가' in html:
         return False, '광고성 문구 포함'
+
+    # 카테고리별 핵심 스펙 키 결정
+    category   = product.get('category', 'smartphone')
+    spec_keys  = _KEY_SPECS_BY_CATEGORY.get(category, ('price',))
+    specs      = product.get('specs', {})
+
+    # 스펙 값이 본문에 언급되는지 확인 (값이 있는 키만 체크)
+    key_checks = []
+    for key in spec_keys:
+        val = specs.get(key, '')
+        if val:
+            key_checks.append(str(val).split('/')[0].strip())
+
+    if key_checks:
+        missing = [v for v in key_checks if v and v not in html]
+        # 절반 이상 누락이면 실패
+        if len(missing) > len(key_checks) // 2:
+            return False, f'핵심 스펙 수치 누락: {missing}'
 
     return True, ''
 

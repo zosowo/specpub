@@ -1,6 +1,6 @@
 """
 크론 발행 스크립트 — 큐에서 1개 꺼내 WordPress에 발행 후 텔레그램 알림.
-크론탭: */30 6-23 * * * /usr/bin/python3 /home/zosowo/specpub/publish_next.py >> /home/zosowo/specpub/publish.log 2>&1
+크론탭: 0 8-22 * * * /usr/bin/python3 /home/zosowo/specpub/publish_next.py >> /home/zosowo/specpub/publish.log 2>&1
 """
 import os
 import sys

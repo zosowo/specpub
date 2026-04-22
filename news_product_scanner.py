@@ -13,11 +13,13 @@
   5. 텔레그램 일일 결과 보고
 """
 
+import ast
 import os
 import re
 import json
 import logging
 import subprocess
+import tempfile
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
@@ -28,7 +30,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 BOT_TOKEN     = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID       = os.getenv('TELEGRAM_CHAT_ID')
-DB_URL        = 'postgresql://postgres:victor123@localhost:5432/victor_jk'
+DB_URL        = os.getenv('VICTOR_JK_DB_URL')
 CLAUDE_BIN    = '/home/zosowo/.nvm/versions/node/v24.14.0/bin/claude'
 CATALOG_PY    = os.path.join(os.path.dirname(__file__), 'catalog.py')
 UPDATER_PY    = os.path.join(os.path.dirname(__file__), 'catalog_updater.py')
@@ -162,6 +164,25 @@ JSON만 출력 (코드블록 없이).
 
 # ── catalog_updater.py UPCOMING_PRODUCTS 자동 추가 ────────
 
+def _write_py_atomic(path: str, content: str):
+    """ast 문법 검증 후 원자적 파일 교체."""
+    try:
+        ast.parse(content)
+    except SyntaxError as e:
+        raise RuntimeError(f'문법 오류 — 원본 보존: {e}')
+    d = os.path.dirname(path)
+    with tempfile.NamedTemporaryFile(
+        mode='w', encoding='utf-8', dir=d, suffix='.tmp', delete=False
+    ) as tf:
+        tf.write(content)
+        tmp = tf.name
+    try:
+        os.replace(tmp, path)
+    except Exception as e:
+        os.unlink(tmp)
+        raise RuntimeError(f'파일 교체 실패: {e}')
+
+
 def add_to_upcoming(brand: str, model: str, category: str):
     """catalog_updater.py의 UPCOMING_PRODUCTS 리스트에 항목 추가."""
     with open(UPDATER_PY, 'r', encoding='utf-8') as f:
@@ -174,13 +195,12 @@ def add_to_upcoming(brand: str, model: str, category: str):
         return False
 
     # UPCOMING_PRODUCTS 리스트 끝(닫는 ] 앞)에 삽입
-    content = re.sub(
+    new_content = re.sub(
         r'(UPCOMING_PRODUCTS\s*=\s*\[[\s\S]*?)\n(\])',
         lambda m: m.group(1) + f'\n    # 뉴스 자동 감지\n{entry}\n' + m.group(2),
         content,
     )
-    with open(UPDATER_PY, 'w', encoding='utf-8') as f:
-        f.write(content)
+    _write_py_atomic(UPDATER_PY, new_content)
     return True
 
 
@@ -219,6 +239,10 @@ def run():
     processed = load_processed()
 
     # DB에서 최근 24시간 기사 조회
+    if not DB_URL:
+        log.error('VICTOR_JK_DB_URL 미설정')
+        send_telegram('⚠️ *[스펙분석소]* VICTOR\_JK\_DB\_URL 환경변수 미설정')
+        return
     try:
         conn = psycopg2.connect(DB_URL)
         cur  = conn.cursor()
@@ -265,7 +289,8 @@ def run():
         category = product_info['category']
         status   = product_info['status']
 
-        slug = re.sub(r'[^\w]+', '-', f'{brand} {model}'.lower()).strip('-')
+        base = model if model.lower().startswith(brand.lower()) else f'{brand} {model}'
+        slug = re.sub(r'[^\w]+', '-', base.lower()).strip('-')
         if slug in existing_slugs or model in upcoming_models:
             log.info(f'  이미 존재: {model}')
             continue

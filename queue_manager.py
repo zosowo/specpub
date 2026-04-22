@@ -54,24 +54,56 @@ def save_to_queue(item: dict, date_str: str, index: int):
         json.dump(item, f, ensure_ascii=False, indent=2)
 
 
+def get_queued_slugs() -> set:
+    """현재 큐에 있는 모든 슬러그 집합 반환 (중복 생성 방지용)."""
+    slugs = set()
+    for path in glob.glob(os.path.join(QUEUE_DIR, '*', '*.json')):
+        try:
+            with open(path, encoding='utf-8') as f:
+                item = json.load(f)
+            slugs.add(item['slug'])
+        except Exception:
+            pass
+    return slugs
+
+
 def load_next_queue_item() -> tuple[str, dict] | tuple[None, None]:
     """
     가장 오래된 날짜 큐에서 첫 번째 미처리 파일을 반환.
+    published.json을 한 번만 읽어 성능 개선.
     반환: (파일경로, 아이템 dict) 또는 (None, None)
     """
     pattern = os.path.join(QUEUE_DIR, '*', '*.json')
     files = sorted(glob.glob(pattern))
+    published = load_published()  # 한 번만 읽기
     for path in files:
-        with open(path, encoding='utf-8') as f:
-            item = json.load(f)
-        if not is_published(item['slug']):
+        try:
+            with open(path, encoding='utf-8') as f:
+                item = json.load(f)
+        except Exception:
+            continue
+        if item['slug'] not in published:
             return path, item
     return None, None
+
+
+def _cleanup_empty_queue_dirs():
+    """발행 완료 후 빈 큐 디렉토리 삭제."""
+    if not os.path.exists(QUEUE_DIR):
+        return
+    for dir_name in os.listdir(QUEUE_DIR):
+        dir_path = os.path.join(QUEUE_DIR, dir_name)
+        if os.path.isdir(dir_path) and not os.listdir(dir_path):
+            try:
+                os.rmdir(dir_path)
+            except OSError:
+                pass
 
 
 def delete_queue_file(path: str):
     try:
         os.remove(path)
+        _cleanup_empty_queue_dirs()
     except OSError:
         pass
 

@@ -16,6 +16,7 @@ import sys
 import ast
 import json
 import logging
+import tempfile
 import requests
 import subprocess
 from datetime import date
@@ -65,6 +66,20 @@ def load_existing_slugs() -> set:
     slugs = {p['slug'] for p in _cat.PRODUCTS}
     slugs |= {t['slug'] for t in _cat.TECH_TOPICS}
     return slugs
+
+
+# ──────────────────────────────────────────────────────────
+# 슬러그 생성 (브랜드 중복 방지)
+# ──────────────────────────────────────────────────────────
+
+def _make_slug(brand: str, model: str) -> str:
+    """
+    model이 이미 brand로 시작하면 brand를 앞에 붙이지 않음.
+    예: brand='Samsung', model='Samsung Galaxy S26' → 'samsung-galaxy-s26'
+        brand='Samsung', model='Bespoke 냉장고'    → 'samsung-bespoke'
+    """
+    base = model if model.lower().startswith(brand.lower()) else f'{brand} {model}'
+    return re.sub(r'[^\w]+', '-', base.lower()).strip('-')
 
 
 # ──────────────────────────────────────────────────────────
@@ -166,14 +181,14 @@ _SPEC_VALIDATORS = {
     'smartphone':     {'ram': (1, 32), 'storage': (8, 1024), 'battery': (1000, 7000), 'main_camera': (1, 300)},
     'laptop':         {'ram': (4, 128), 'storage': (64, 4096), 'display_size': (10, 18)},
     'tablet':         {'ram': (2, 16), 'battery': (3000, 15000), 'display_size': (7, 15)},
-    'earphone':       {'driver_size': (4, 50), 'battery': (0, 50)},
-    'smartwatch':     {'battery': (100, 1000), 'display_size': (1, 3)},
-    'tv':             {'display_size': (24, 100), 'refresh_rate': (60, 240)},
-    'monitor':        {'display_size': (18, 50), 'refresh_rate': (60, 360)},
-    'refrigerator':   {'capacity': (50, 1000)},
+    'earphone':       {'driver_size': (4, 50), 'battery': (0, 60)},
+    'smartwatch':     {'battery': (100, 2000), 'display_size': (1, 3)},
+    'tv':             {'display_size': (24, 110), 'refresh_rate': (60, 240)},
+    'monitor':        {'display_size': (18, 60), 'refresh_rate': (60, 360)},
+    'refrigerator':   {'capacity': (50, 1200)},
     'washing_machine':{'capacity': (3, 30)},
-    'air_conditioner':{'cooling_capacity': (1, 100)},
-    'camera':         {'megapixel': (1, 150)},
+    'air_conditioner':{'cooling_capacity': (1, 200)},
+    'camera':         {'megapixel': (1, 200)},
 }
 
 
@@ -224,9 +239,6 @@ def _extract_specs_from_page(page_text: str, category: str, brand: str, model: s
     페이지 텍스트에서 스펙을 추출 (Claude Haiku 사용).
     실제 페이지 내용 기반 추출이므로 할루시네이션 없음.
     """
-    import catalog as _cat
-    schema = _cat  # 스키마 키 참조용
-    # 카테고리별 추출 대상 키
     field_hints = {
         'smartphone':     'chip, ram(GB), storage(GB), display_size(inch), display_panel, refresh_rate(Hz), main_camera(MP), battery(mAh), charging(W), weight(g), price(원), os',
         'laptop':         'cpu, ram(GB), storage(GB), display_size(inch), display_panel, refresh_rate(Hz), gpu, battery(Wh), weight(kg), price(원), os',
@@ -271,13 +283,11 @@ def _extract_specs_from_page(page_text: str, category: str, brand: str, model: s
     raw = _run_claude(prompt, timeout=60)
     if not raw or raw.lower() == 'null':
         return None
-    # JSON 추출
     m = re.search(r'\{[\s\S]+\}', raw)
     if not m:
         return None
     try:
         specs = json.loads(m.group())
-        # 브랜드 추가
         specs['brand'] = brand
         return specs
     except Exception:
@@ -306,7 +316,7 @@ def discover_and_verify_product(brand: str, model: str, category: str,
     공식 사이트에서 제품 스펙 검색·추출·검증.
     성공 시 catalog 항목 dict 반환, 실패 시 None.
     """
-    slug = re.sub(r'[^\w]+', '-', f'{brand} {model}'.lower()).strip('-')
+    slug = _make_slug(brand, model)
     if slug in existing_slugs:
         log.info(f'이미 존재: {slug}')
         return None
@@ -319,16 +329,13 @@ def discover_and_verify_product(brand: str, model: str, category: str,
     queries.append(f'{brand} {model} 스펙 공식')
 
     page_text = ''
-    source_url = ''
     for query in queries:
         urls = _ddg_search(query, limit=3)
         for url in urls:
             text = _fetch_page(url)
-            # 페이지에 모델명이 있어야 함
             model_words = model.lower().split()
             if sum(1 for w in model_words if w in text.lower()) >= max(1, len(model_words) // 2):
                 page_text = text
-                source_url = url
                 break
         if page_text:
             break
@@ -345,13 +352,12 @@ def discover_and_verify_product(brand: str, model: str, category: str,
         log.warning(f'스펙 검증 실패 [{model}]: {reason}')
         return None
 
-    release_year = str(date.today().year)
     return {
         'model':        model,
         'slug':         slug,
         'brand':        brand,
         'category':     category,
-        'release_year': release_year,
+        'release_year': str(date.today().year),
         'specs':        specs,
     }
 
@@ -387,14 +393,14 @@ UPCOMING_PRODUCTS = [
     {'brand': 'Samsung', 'model': 'Samsung Neo QLED 8K QN900F',  'category': 'tv'},
     {'brand': 'LG',      'model': 'LG OLED G6',                  'category': 'tv'},
     # 냉장고
-    {'brand': 'Samsung', 'model': 'Samsung BESPOKE AI 냉장고 2026', 'category': 'refrigerator'},
-    {'brand': 'LG',      'model': 'LG 디오스 오브제컬렉션 2026',   'category': 'refrigerator'},
+    {'brand': 'Samsung', 'model': 'Samsung BESPOKE AI Refrigerator 2026', 'category': 'refrigerator'},
+    {'brand': 'LG',      'model': 'LG DIOS Objet Collection 2026',        'category': 'refrigerator'},
     # 세탁기
-    {'brand': 'Samsung', 'model': 'Samsung 그랑데 AI 세탁기 2026', 'category': 'washing_machine'},
-    {'brand': 'LG',      'model': 'LG 트롬 오브제컬렉션 2026',     'category': 'washing_machine'},
+    {'brand': 'Samsung', 'model': 'Samsung Grande AI Washer 2026',        'category': 'washing_machine'},
+    {'brand': 'LG',      'model': 'LG Trom Objet Collection 2026',        'category': 'washing_machine'},
     # 로봇청소기
     {'brand': 'Roborock', 'model': 'Roborock S9 MaxV Ultra',     'category': 'robot_vacuum'},
-    {'brand': 'Samsung',  'model': 'Samsung Bespoke Jet Bot AI+ 2026', 'category': 'robot_vacuum'},
+    {'brand': 'Samsung',  'model': 'Samsung Bespoke Jet Bot AI Plus 2026','category': 'robot_vacuum'},
     # 이어폰
     {'brand': 'Apple',   'model': 'Apple AirPods Pro 3',         'category': 'earphone'},
     {'brand': 'Samsung', 'model': 'Samsung Galaxy Buds 4 Pro',   'category': 'earphone'},
@@ -406,7 +412,7 @@ UPCOMING_PRODUCTS = [
 
 
 # ──────────────────────────────────────────────────────────
-# catalog.py 파일 패치
+# catalog.py 파일 패치 (원자적 쓰기 + 문법 검증)
 # ──────────────────────────────────────────────────────────
 
 def _product_to_line(p: dict) -> str:
@@ -426,31 +432,63 @@ def _topic_to_line(t: dict) -> str:
     return f'    {{"slug":{slug}, "title":{title}}},'
 
 
+def _write_catalog_safe(content: str):
+    """
+    catalog.py를 원자적으로 쓰고 Python 문법을 검증.
+    검증 실패 시 원본을 보존하고 예외를 발생시킴.
+    """
+    # 1. 문법 검증 (쓰기 전)
+    try:
+        ast.parse(content)
+    except SyntaxError as e:
+        raise RuntimeError(f'catalog.py 문법 오류 — 원본 보존: {e}')
+
+    # 2. 임시 파일에 쓰기 후 원자적 교체
+    catalog_dir = os.path.dirname(CATALOG_PY)
+    with tempfile.NamedTemporaryFile(
+        mode='w', encoding='utf-8',
+        dir=catalog_dir, suffix='.tmp', delete=False
+    ) as tf:
+        tf.write(content)
+        tmp_path = tf.name
+
+    try:
+        os.replace(tmp_path, CATALOG_PY)  # 같은 파티션이면 원자적
+    except Exception as e:
+        os.unlink(tmp_path)
+        raise RuntimeError(f'catalog.py 교체 실패: {e}')
+
+
 def append_to_catalog(new_products: list[dict], new_topics: list[dict]):
     """catalog.py의 PRODUCTS·TECH_TOPICS 끝에 항목 추가."""
     with open(CATALOG_PY, 'r', encoding='utf-8') as f:
         content = f.read()
 
+    today = date.today().isoformat()
+
     if new_products:
         product_lines = '\n'.join(_product_to_line(p) for p in new_products)
-        # PRODUCTS 닫는 ] 바로 앞에 삽입
         content = re.sub(
-            r'(PRODUCTS\s*=\s*\[.*?)\n(\])',
-            lambda m: m.group(1) + '\n\n    # ── 자동 추가 ' + date.today().isoformat() + '\n' + product_lines + '\n' + m.group(2),
-            content, flags=re.S,
+            r'(PRODUCTS\s*=\s*\[[\s\S]*?)\n(\])',
+            lambda m: (m.group(1)
+                       + f'\n\n    # ── 자동 추가 {today}\n'
+                       + product_lines + '\n'
+                       + m.group(2)),
+            content,
         )
 
     if new_topics:
         topic_lines = '\n'.join(_topic_to_line(t) for t in new_topics)
-        # TECH_TOPICS 닫는 ] 바로 앞에 삽입
         content = re.sub(
-            r'(TECH_TOPICS\s*=\s*\[.*?)\n(\])',
-            lambda m: m.group(1) + '\n\n    # ── 자동 추가 ' + date.today().isoformat() + '\n' + topic_lines + '\n' + m.group(2),
-            content, flags=re.S,
+            r'(TECH_TOPICS\s*=\s*\[[\s\S]*?)\n(\])',
+            lambda m: (m.group(1)
+                       + f'\n\n    # ── 자동 추가 {today}\n'
+                       + topic_lines + '\n'
+                       + m.group(2)),
+            content,
         )
 
-    with open(CATALOG_PY, 'w', encoding='utf-8') as f:
-        f.write(content)
+    _write_catalog_safe(content)
 
 
 # ──────────────────────────────────────────────────────────
@@ -474,7 +512,7 @@ def run():
         model    = candidate['model']
         category = candidate['category']
 
-        slug = re.sub(r'[^\w]+', '-', f'{brand} {model}'.lower()).strip('-')
+        slug = _make_slug(brand, model)
         if slug in existing:
             log.info(f'건너뜀 (이미 존재): {model}')
             continue
@@ -492,8 +530,13 @@ def run():
 
     # ── 3. catalog.py 업데이트
     if new_products or new_topics:
-        append_to_catalog(new_products, new_topics)
-        log.info(f'catalog.py 업데이트 완료: 제품 +{len(new_products)}, 주제 +{len(new_topics)}')
+        try:
+            append_to_catalog(new_products, new_topics)
+            log.info(f'catalog.py 업데이트 완료: 제품 +{len(new_products)}, 주제 +{len(new_topics)}')
+        except RuntimeError as e:
+            log.error(f'catalog.py 업데이트 실패: {e}')
+            send_telegram(f'🚨 *[스펙분석소] catalog.py 업데이트 실패*\n`{e}`')
+            return {'added_products': 0, 'added_topics': 0, 'failed': len(failed_models), 'failed_list': failed_models}
     else:
         log.info('추가할 항목 없음')
 

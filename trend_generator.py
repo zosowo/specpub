@@ -26,6 +26,7 @@ import psycopg2
 import content_generator as cg
 import queue_manager as qm
 import telegram_utils as tg
+import trend_sources as ts
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
@@ -102,13 +103,29 @@ def fetch_victor_jk() -> list:
         return []
 
 
+def fetch_external_trends() -> list:
+    """pytrends(Google Trends 한국 일간) + YouTube Data API 인기 영상.
+    반환: [(title, summary, 'google_trends'|'youtube'), ...]"""
+    items = ts.collect_external_keywords(limit_per_source=20)
+    out   = []
+    for it in items:
+        kw  = it['keyword']
+        ctx = it.get('context', '')
+        out.append((kw, ctx, it['source']))
+    return out
+
+
 def fetch_all() -> list:
-    """외부 소스(Google News) 우선 + victor-jk 보조."""
-    ext = fetch_google_news()
-    log.info(f'Google News RSS: {len(ext)}건')
+    """외부 트렌드(Google Trends + YouTube) **최우선** → Google News RSS → victor-jk 보조."""
+    ext_trend = fetch_external_trends()
+    log.info(f'외부 트렌드(Google Trends/YouTube): {len(ext_trend)}건')
+    news = fetch_google_news()
+    log.info(f'Google News RSS: {len(news)}건')
     vjk = fetch_victor_jk()
     log.info(f'victor-jk DB: {len(vjk)}건')
-    return ext + vjk  # 외부가 앞 → Claude 입력에서 우선 노출
+    # 순서: 외부 트렌드 키워드 → Google News → victor-jk
+    # Claude 입력에서 앞쪽에 더 자주 노출되므로 프롬프트 가중치 역할
+    return ext_trend + news + vjk
 
 
 # ──────────────────────────────────────────────────────────
@@ -194,11 +211,13 @@ def extract_topics(articles: list, n_candidates: int) -> list:
     prompt = f"""다음은 오늘 한국 IT/전자기기 관련 뉴스 목록입니다. 가장 핫한 트렌드 주제 {n_candidates}개를 뽑아주세요.
 
 규칙:
+- **[google_trends], [youtube] 소스의 항목은 지금 검색·시청이 가장 뜨거운 키워드**이므로 최우선으로 반영
+- google_news 는 뉴스 맥락 보강용, victor_jk 는 국내 뉴스 보조용
 - 단일 기업 실적·인사·법원 판결·단순 제품 발표는 제외
 - 기술 흐름, 소비자 관심, 제품 카테고리 변화 같은 거시 트렌드만
 - 각 주제에 "keywords" 배열(2~4개 핵심어, 한국어 명사구 위주) 포함 — 나중에 중복/우선순위 판단용
 - 서로 다른 주제끼리 keywords가 겹치지 않도록 다양화
-- 외부 소스(google_news)에서 반복 언급된 이슈에 우선순위
+- title 은 "현재 상황 + 인사이트"가 드러나도록 구성 (예: "갤럭시 Z폴드7 사전 예약 폭주, 폴더블 시장의 분기점이 된 이유")
 - JSON 배열로만 응답 (주석·설명 금지):
 
 [

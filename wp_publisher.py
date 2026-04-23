@@ -23,9 +23,40 @@ HEADERS = {
 
 _UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
+INDEXNOW_KEY = os.getenv('INDEXNOW_KEY', '').strip()
+
+import random as _random
+
+try:
+    from catalog_images import CATALOG_IMAGES as _CATALOG_IMAGES
+except ImportError:
+    _CATALOG_IMAGES = {}
+
 
 def _api(path: str) -> str:
     return f'{WP_URL}/wp-json/wp/v2/{path}'
+
+
+def _indexnow_ping(url: str) -> None:
+    """IndexNow 핑 (Bing·네이버 등 호환 검색엔진에 색인 요청). 실패는 무시."""
+    if not INDEXNOW_KEY or not url:
+        return
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or ''
+        if not host:
+            return
+        requests.get(
+            'https://api.indexnow.org/indexnow',
+            params={
+                'url':         url,
+                'key':         INDEXNOW_KEY,
+                'keyLocation': f'https://{host}/{INDEXNOW_KEY}.txt',
+            },
+            timeout=8,
+        )
+    except Exception as e:
+        log.warning(f'IndexNow 핑 실패: {e}')
 
 
 # ──────────────────────────────────────────────────────────
@@ -126,6 +157,31 @@ def _is_usable_image(url: str) -> bool:
     """SVG·GIF 제외, 실제 래스터 이미지만 허용."""
     low = url.lower().split('?')[0]
     return bool(url) and not low.endswith('.svg') and not low.endswith('.gif')
+
+
+def _product_tokens(brand: str, model: str) -> list[str]:
+    """브랜드+모델에서 검증용 핵심 토큰(2자 이상, 불용어 제외) 추출."""
+    stop = {'the', 'pro', 'max', 'plus', 'mini', 'lite', 'ultra', 'edge',
+            'new', 'inch', 'gen', 'and', 'with', 'for', '5g'}
+    text = f'{brand} {model}'.lower()
+    tokens = re.findall(r'[a-z0-9]+', text)
+    return [t for t in tokens if len(t) >= 2 and t not in stop]
+
+
+def _image_matches(url: str, brand: str, model: str, context: str = '') -> bool:
+    """이미지 URL 이 제품과 매칭되는지 검증 (URL 만).
+
+    - 핵심 토큰(브랜드+모델 분해)의 과반이 **URL 에 직접 포함**되어야 통과.
+    - context 파라미터는 호환성 유지용으로만 받고 검증에는 사용하지 않음.
+      (이전에는 context 에 검색 query 를 넣어 우회가 발생: Pro Max 제품에 Pro 이미지 등)
+    """
+    del context  # 의도적 미사용 — 과거 버그 방지
+    tokens = _product_tokens(brand, model)
+    if not tokens:
+        return False
+    hay  = url.lower()
+    hits = sum(1 for t in tokens if t in hay)
+    return hits >= max(2, (len(tokens) + 1) // 2)
 
 
 def _wikipedia_image(query: str, brand: str = '') -> str:
@@ -281,65 +337,95 @@ def _fetch_unsplash_image(category: str) -> str:
 # ──────────────────────────────────────────────────────────
 
 def fetch_pixabay_image_url(product: dict) -> str:
-    """Pixabay 폴백 이미지 검색."""
-    brand    = product.get('brand', '')
+    """Pixabay 카테고리 폴백 — 브랜드 배제, 카테고리 쿼리만 사용.
+
+    이전에는 `f"{brand} {category}"` 조합으로 검색했으나, Pixabay 결과가
+    해시형 URL 이라 검증이 어렵고 브랜드 섞이면 엉뚱한 카테고리가 매칭됨
+    (예: Pixel 9 글에 노트북). 카테고리 전용 쿼리로 단순화하여 최소한
+    "같은 카테고리" 보장.
+    """
     category = product.get('category', 'smartphone')
+    query    = _CATEGORY_QUERIES.get(category, 'technology gadget')
 
-    queries = [
-        f"{brand} {_CATEGORY_QUERIES.get(category, 'technology')}",
-        _CATEGORY_QUERIES.get(category, 'technology'),
-        'technology gadget',
-    ]
-
-    for query in queries:
-        try:
-            r = requests.get(
-                'https://pixabay.com/api/',
-                params={
-                    'key':         PIXABAY_KEY,
-                    'q':           query,
-                    'image_type':  'photo',
-                    'orientation': 'horizontal',
-                    'category':    'technology',
-                    'min_width':   400,
-                    'per_page':    10,
-                    'safesearch':  'true',
-                },
-                timeout=10,
-            )
-            hits = r.json().get('hits', [])
-            if hits:
-                return hits[0].get('webformatURL', '')
-        except Exception as e:
-            log.warning(f'Pixabay 검색 실패 ({query}): {e}')
+    try:
+        r = requests.get(
+            'https://pixabay.com/api/',
+            params={
+                'key':         PIXABAY_KEY,
+                'q':           query,
+                'image_type':  'photo',
+                'orientation': 'horizontal',
+                'per_page':    15,
+                'safesearch':  'true',
+            },
+            timeout=10,
+        )
+        hits = r.json().get('hits', [])
+        if hits:
+            return _random.choice(hits).get('webformatURL', '')
+    except Exception as e:
+        log.warning(f'Pixabay 카테고리 폴백 실패 ({query}): {e}')
     return ''
 
 
 def _get_image_url(product: dict) -> str:
-    """우선순위: 웹 검색 → Pixabay → Unsplash."""
+    """스펙 제품 발행용 이미지 URL — 4단계 폴백, 항상 이미지 확보 우선.
+
+    우선순위:
+      1. catalog_images 매핑 (slug별 공식 URL, 100% 정확)
+      2. 웹검색 (Wikipedia/DDG/og) + 토큰 검증 통과 (정확)
+      3. Pixabay 카테고리 폴백 — 브랜드 배제, 카테고리 일치 보장
+      4. Unsplash 카테고리 폴백 — 최후 안전망
+
+    엉뚱한 카테고리 이미지(예: 스마트폰 글에 노트북)는 방지하되,
+    실제 제품 사진을 못 구해도 최소 "같은 카테고리" 이미지는 확보.
+    """
     model    = product.get('model', '')
     brand    = product.get('brand', '')
     category = product.get('category', 'smartphone')
 
-    img = fetch_web_image_url(model, brand)
-    if img:
-        return img
+    # 1. catalog 고정 URL
+    slug  = product.get('slug', '')
+    fixed = (product.get('image_url') or _CATALOG_IMAGES.get(slug, '') or '').strip()
+    if fixed and _is_usable_image(fixed):
+        log.info(f'[1/4] catalog image_url: {brand} {model}')
+        return fixed
 
-    log.info(f'웹 이미지 없음, Pixabay 폴백: {model}')
+    # 2. 웹검색 + 검증
+    img = fetch_web_image_url(model, brand)
+    if img and _image_matches(img, brand, model):
+        log.info(f'[2/4] 웹검색 검증 통과: {brand} {model}')
+        return img
+    if img:
+        log.warning(f'웹 이미지 검증 실패, 다음 폴백: {brand} {model}')
+
+    # 3. Pixabay 카테고리 폴백
     img = fetch_pixabay_image_url(product)
     if img:
+        log.info(f'[3/4] Pixabay 카테고리 폴백: {category}')
         return img
 
-    log.info(f'Pixabay 없음, Unsplash 폴백: {model}')
-    return _fetch_unsplash_image(category)
+    # 4. Unsplash 최후 폴백
+    img = _fetch_unsplash_image(category)
+    if img:
+        log.info(f'[4/4] Unsplash 카테고리 폴백: {category}')
+        return img
+
+    log.error(f'모든 이미지 소스 실패: {brand} {model}')
+    return ''
 
 
 # ──────────────────────────────────────────────────────────
 # WordPress 미디어 업로드
 # ──────────────────────────────────────────────────────────
 
-def upload_image_from_url(image_url: str, alt_text: str = '') -> int:
-    """이미지 URL을 WP 미디어 라이브러리에 업로드, media ID 반환."""
+def upload_image_from_url(image_url: str, alt_text: str = '', filename_base: str = '') -> int:
+    """이미지 URL을 WP 미디어 라이브러리에 업로드, media ID 반환.
+
+    - alt_text: WP attachment 의 alt 필드(_wp_attachment_image_alt) 설정에 사용.
+      한글 포함 가능. SEO/접근성 핵심.
+    - filename_base: 파일명 베이스 (ASCII). 미지정 시 alt_text 에서 ASCII 추출.
+    """
     try:
         img_r = requests.get(image_url, headers={'User-Agent': _UA}, timeout=15)
         img_r.raise_for_status()
@@ -351,7 +437,8 @@ def upload_image_from_url(image_url: str, alt_text: str = '') -> int:
         mime = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
                 'png': 'image/png', 'webp': 'image/webp'}.get(ext, 'image/jpeg')
 
-        safe_name = re.sub(r'[^\x00-\x7F]', '', alt_text)  # ASCII만 남기기
+        base = filename_base or alt_text
+        safe_name = re.sub(r'[^\x00-\x7F]', '', base)
         safe_name = re.sub(r'[^\w\-]', '_', safe_name)[:60] or 'image'
         headers = {
             'Authorization':       HEADERS['Authorization'],
@@ -359,11 +446,24 @@ def upload_image_from_url(image_url: str, alt_text: str = '') -> int:
             'Content-Disposition': f'attachment; filename="{safe_name}.{ext}"',
         }
         r = requests.post(_api('media'), data=img_data, headers=headers, timeout=30)
-        if r.status_code in (200, 201):
-            media_id = r.json().get('id', 0)
-            log.info(f'이미지 업로드 성공: media_id={media_id}')
-            return media_id
-        log.warning(f'이미지 업로드 실패: {r.status_code}')
+        if r.status_code not in (200, 201):
+            log.warning(f'이미지 업로드 실패: {r.status_code}')
+            return 0
+        media_id = r.json().get('id', 0)
+        log.info(f'이미지 업로드 성공: media_id={media_id}')
+
+        # alt 필드 설정 (SEO / 접근성)
+        if media_id and alt_text:
+            try:
+                requests.post(
+                    _api(f'media/{media_id}'),
+                    json={'alt_text': alt_text, 'title': alt_text},
+                    headers=HEADERS,
+                    timeout=10,
+                )
+            except Exception as e:
+                log.warning(f'alt 메타 설정 실패: {e}')
+        return media_id
     except Exception as e:
         log.warning(f'이미지 업로드 오류: {e}')
     return 0
@@ -391,9 +491,9 @@ def get_or_create_term(name: str, taxonomy: str) -> int:
 # 매칭 우선순위 = dict insertion order. 구체·복합어 먼저 → 포괄 키워드 나중.
 _TECH_IMAGE_QUERIES = {
     # ── 가전 카테고리 (구체 우선, slug 영문도 포함) ──
-    '공기청정기':       'air purifier home clean',
-    'air-purifier':     'air purifier home clean',
-    'air purifier':     'air purifier home clean',
+    '공기청정기':       'air purifier hepa filter',
+    'air-purifier':     'air purifier hepa filter',
+    'air purifier':     'air purifier hepa filter',
     '로봇청소기':       'robot vacuum cleaner',
     'robot-vacuum':     'robot vacuum cleaner',
     'robot vacuum':     'robot vacuum cleaner',
@@ -403,9 +503,9 @@ _TECH_IMAGE_QUERIES = {
     'microwave':        'microwave oven kitchen',
     '음식물처리기':     'food waste processor kitchen',
     'food-waste':       'food waste processor kitchen',
-    '에어컨':           'air conditioner room interior',
-    'air-conditioner':  'air conditioner room interior',
-    'air conditioner':  'air conditioner room interior',
+    '에어컨':           'split air conditioner wall mounted',
+    'air-conditioner':  'split air conditioner wall mounted',
+    'air conditioner':  'split air conditioner wall mounted',
     '세탁기':           'washing machine laundry',
     'washing-machine':  'washing machine laundry',
     'washing machine':  'washing machine laundry',
@@ -425,7 +525,7 @@ _TECH_IMAGE_QUERIES = {
     'dehumidifier':     'dehumidifier humidity home',
     '정수기':           'water purifier kitchen',
     'water-purifier':   'water purifier kitchen',
-    '비데':             'bathroom modern interior',
+    '비데':             'bidet toilet electronic',
     '안마의자':         'massage chair relax',
     '커피머신':         'coffee machine espresso',
 
@@ -539,6 +639,20 @@ _TECH_IMAGE_QUERIES = {
     '미세먼지':         'air pollution particulate',
     '냉매':             'refrigerator compressor',
 
+    # ── 보증·서비스·에너지 ──
+    '보증':             'warranty document contract',
+    'as 센터':          'customer service repair desk',
+    'a/s':              'customer service repair desk',
+    '에너지 소비효율':  'energy efficiency rating label',
+    '에너지':           'energy efficiency appliance',
+    '등급':             'energy rating label',
+
+    # ── 조명·스마트홈 ──
+    '스마트 조명':      'smart light bulb connected',
+    '필립스 휴':        'philips hue smart light',
+    '시라이트':         'smart light bulb',
+    '조명':             'lamp lighting home',
+
     # ── 보안·사기 (생활 정보) ──
     '보이스피싱':       'phone scam fraud security',
     '피싱':             'phishing cyber security',
@@ -550,16 +664,83 @@ _TECH_IMAGE_QUERIES = {
     '다이어트':         'fitness diet wellness',
 }
 
-import random as _random
+_TECH_TITLE_STOP = {
+    # 한글 불용어
+    '비교', '가이드', '선택법', '선택', '정리', '차이', '설치', '방법', '활용', '기능',
+    '해설', '완전', '기초', '무엇', '있나', '뭘까', '어떻게', '이란', '총정리', '대응법',
+    'vs', '대비',
+    # 영어 불용어
+    'the', 'and', 'for', 'with', 'pro', 'guide', 'tech', 'what', 'how', 'why',
+}
+
 
 def _tech_image_query(title: str, slug: str) -> str:
-    """제목/슬러그 키워드로 적절한 Pixabay 쿼리 반환. 매칭 실패는 로그로 추적."""
+    """제목/슬러그 키워드로 적절한 Pixabay 쿼리 반환.
+
+    매핑 미스 시 제목 앞쪽 의미 있는 단어 2개로 동적 쿼리 생성 ('중성 폴백' 보다
+    주제에 가까운 이미지 확률이 높아짐).
+    """
     text = (title + ' ' + slug).lower()
     for keyword, query in _TECH_IMAGE_QUERIES.items():
         if keyword.lower() in text:
             return query
-    log.warning(f'[이미지 매핑 미스] title={title!r} slug={slug!r} — 중성 폴백 사용')
-    return 'home electronics appliance'  # smartphone 편향 회피
+
+    # 제목 기반 폴백
+    words = re.findall(r'[가-힣a-zA-Z]{2,}', title)
+    words = [w for w in words if w.lower() not in _TECH_TITLE_STOP]
+    if words:
+        fallback = ' '.join(words[:2])
+        log.warning(f'[이미지 매핑 미스] title={title!r} — 제목 폴백: {fallback!r}')
+        return fallback
+
+    log.warning(f'[이미지 매핑 미스] title={title!r} — 중성 폴백 사용')
+    return 'home electronics appliance'
+
+
+def _title_matches_weak(url: str, title: str, slug: str) -> bool:
+    """기술·트렌드 글의 이미지 약한 검증.
+    제목/슬러그에서 추출한 유의미 토큰이 URL 에 1개라도 포함되면 통과.
+    """
+    hay    = url.lower()
+    tokens = re.findall(r'[가-힣a-zA-Z0-9]{2,}', (title + ' ' + slug).lower())
+    tokens = [t for t in tokens if t not in _TECH_TITLE_STOP]
+    return any(t in hay for t in tokens) if tokens else False
+
+
+def _get_tech_image_url(title: str, slug: str) -> str:
+    """기술·트렌드 글 이미지 — 3단계 폴백, 항상 이미지 확보.
+
+    1) 웹검색 og:image + 제목 토큰 약한 검증
+    2) Pixabay (_tech_image_query: 키워드 매핑 또는 제목 기반 폴백)
+    3) Unsplash 일반 기술 폴백
+    """
+    img = fetch_web_image_url(title, '')
+    if img and _title_matches_weak(img, title, slug):
+        log.info(f'[tech 1/3] 웹검색 검증 통과: {title[:40]}')
+        return img
+    if img:
+        log.warning(f'[tech] 웹 이미지 검증 실패, 다음 폴백: {title[:40]}')
+
+    query = _tech_image_query(title, slug)
+    try:
+        r = requests.get(
+            'https://pixabay.com/api/',
+            params={'key': PIXABAY_KEY, 'q': query, 'image_type': 'photo',
+                    'orientation': 'horizontal', 'per_page': 15, 'safesearch': 'true'},
+            timeout=10,
+        )
+        hits = r.json().get('hits', [])
+        if hits:
+            log.info(f'[tech 2/3] Pixabay: {query!r}')
+            return _random.choice(hits).get('webformatURL', '')
+    except Exception as e:
+        log.warning(f'[tech] Pixabay 실패 ({query!r}): {e}')
+
+    img = _fetch_unsplash_image('smartphone')
+    if img:
+        log.info(f'[tech 3/3] Unsplash 폴백')
+        return img
+    return ''
 
 
 def _get_or_create_tags(tag_names: list[str]) -> list[int]:
@@ -582,7 +763,7 @@ def publish_spec_post(product: dict, content_html: str) -> str:
     media_id = 0
     img_url  = _get_image_url(product)
     if img_url:
-        media_id = upload_image_from_url(img_url, product['model'])
+        media_id = upload_image_from_url(img_url, alt_text=product['model'], filename_base=product['slug'])
 
     # 태그: 브랜드 + 카테고리 한글명
     _cat_kr = {
@@ -615,36 +796,23 @@ def publish_spec_post(product: dict, content_html: str) -> str:
 
     r = requests.post(_api('products'), json=payload, headers=HEADERS, timeout=30)
     r.raise_for_status()
-    return r.json().get('link', '')
+    link = r.json().get('link', '')
+    _indexnow_ping(link)
+    return link
 
 
 def publish_tech_post(title: str, slug: str, content_html: str) -> str:
     """기술정보 일반 포스트 발행."""
     cat_id = get_or_create_term('기술정보', 'categories')
 
-    # 이미지: 웹검색(DDG+Wikipedia+og:image) → Pixabay(주제별 쿼리) 폴백
+    # 이미지: 3단계 폴백 (웹검색+검증 → Pixabay → Unsplash)
     media_id = 0
-    img_url  = fetch_web_image_url(title, '')
-    if not img_url:
-        query = _tech_image_query(title, slug)
-        try:
-            r = requests.get(
-                'https://pixabay.com/api/',
-                params={'key': PIXABAY_KEY, 'q': query, 'image_type': 'photo',
-                        'orientation': 'horizontal', 'per_page': 10, 'safesearch': 'true'},
-                timeout=10,
-            )
-            hits = r.json().get('hits', [])
-            if hits:
-                img_url = _random.choice(hits).get('webformatURL', '')
-        except Exception as e:
-            log.warning(f'기술정보 Pixabay 폴백 실패: {e}')
+    img_url  = _get_tech_image_url(title, slug)
     if img_url:
-        media_id = upload_image_from_url(img_url, slug)
+        media_id = upload_image_from_url(img_url, alt_text=title, filename_base=slug)
 
     # 제목에서 2~3개 핵심어 태그 추출 (괄호·특수문자 제거)
-    import re as _re
-    words = _re.sub(r'[^\w\s가-힣]', ' ', title).split()
+    words = re.sub(r'[^\w\s가-힣]', ' ', title).split()
     tag_names = [w for w in words if len(w) >= 2][:3] + ['기술정보']
     tag_ids   = _get_or_create_tags(tag_names)
 
@@ -661,7 +829,9 @@ def publish_tech_post(title: str, slug: str, content_html: str) -> str:
 
     r = requests.post(_api('posts'), json=payload, headers=HEADERS, timeout=30)
     r.raise_for_status()
-    return r.json().get('link', '')
+    link = r.json().get('link', '')
+    _indexnow_ping(link)
+    return link
 
 
 def publish_trend_post(title: str, slug: str, content_html: str,
@@ -681,28 +851,13 @@ def publish_trend_post(title: str, slug: str, content_html: str,
                           headers=HEADERS, timeout=10)
         cat_id = r.json().get('id', 0)
 
-    # 이미지: 웹 검색(DDG+Wikipedia+og:image) → Pixabay 폴백
+    # 이미지: 3단계 폴백 (웹검색+검증 → Pixabay → Unsplash)
     media_id = 0
-    img_url  = fetch_web_image_url(title, '')
-    if not img_url:
-        query = _tech_image_query(title, slug)
-        try:
-            r = requests.get(
-                'https://pixabay.com/api/',
-                params={'key': PIXABAY_KEY, 'q': query, 'image_type': 'photo',
-                        'orientation': 'horizontal', 'per_page': 10, 'safesearch': 'true'},
-                timeout=10,
-            )
-            hits = r.json().get('hits', [])
-            if hits:
-                img_url = _random.choice(hits).get('webformatURL', '')
-        except Exception as e:
-            log.warning(f'트렌드 Pixabay 폴백 실패: {e}')
+    img_url  = _get_tech_image_url(title, slug)
     if img_url:
-        media_id = upload_image_from_url(img_url, slug)
+        media_id = upload_image_from_url(img_url, alt_text=title, filename_base=slug)
 
-    import re as _re
-    words = _re.sub(r'[^\w\s가-힣]', ' ', title).split()
+    words = re.sub(r'[^\w\s가-힣]', ' ', title).split()
     tag_names = [w for w in words if len(w) >= 2][:3] + ['트렌드']
     if is_hot:
         tag_names.append('인기')
@@ -724,7 +879,10 @@ def publish_trend_post(title: str, slug: str, content_html: str,
     r = requests.post(_api('posts'), json=payload, headers=HEADERS, timeout=30)
     r.raise_for_status()
     data = r.json()
-    return data.get('link', ''), int(data.get('id', 0))
+    link    = data.get('link', '')
+    post_id = int(data.get('id', 0))
+    _indexnow_ping(link)
+    return link, post_id
 
 
 def post_exists(slug: str, post_type: str = 'posts') -> bool:

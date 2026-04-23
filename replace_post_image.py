@@ -21,30 +21,15 @@ def main(post_id: int) -> None:
     import html
     title = html.unescape(title)
 
-    # 2. 이미지 재생성 (publish_tech_post와 동일 로직)
-    img_url = wp.fetch_web_image_url(title, '')
-    src = '웹검색'
-    if not img_url:
-        query = wp._tech_image_query(title, slug)
-        print(f'  웹검색 실패 → Pixabay 쿼리={query!r}')
-        r = requests.get(
-            'https://pixabay.com/api/',
-            params={'key': wp.PIXABAY_KEY, 'q': query, 'image_type': 'photo',
-                    'orientation': 'horizontal', 'per_page': 10, 'safesearch': 'true'},
-            timeout=10,
-        )
-        hits = r.json().get('hits', [])
-        if hits:
-            import random
-            img_url = random.choice(hits).get('webformatURL', '')
-            src = f'Pixabay({query})'
+    # 2. 이미지 재생성 (publish_tech_post / publish_trend_post 와 동일 로직)
+    img_url = wp._get_tech_image_url(title, slug)
     if not img_url:
         print('이미지 획득 실패', file=sys.stderr)
         sys.exit(1)
-    print(f'  이미지 소스={src}: {img_url[:100]}')
+    print(f'  신규 img_url: {img_url[:100]}')
 
     # 3. 업로드
-    new_media = wp.upload_image_from_url(img_url, slug)
+    new_media = wp.upload_image_from_url(img_url, alt_text=title, filename_base=slug)
     if not new_media:
         print('업로드 실패', file=sys.stderr)
         sys.exit(1)

@@ -21,17 +21,14 @@ def main(post_id: int) -> None:
     import html
     title = html.unescape(title)
 
-    # 2. 이미지 재생성 (publish_tech_post / publish_trend_post 와 동일 로직)
-    img_url = wp._get_tech_image_url(title, slug)
-    if not img_url:
-        print('이미지 획득 실패', file=sys.stderr)
-        sys.exit(1)
-    print(f'  신규 img_url: {img_url[:100]}')
-
-    # 3. 업로드
-    new_media = wp.upload_image_from_url(img_url, alt_text=title, filename_base=slug)
+    # 2~3. 후보 순회 업로드 (publish_tech_post / publish_trend_post 와 동일 로직)
+    new_media = wp._upload_first_ok(
+        wp._iter_image_urls_tech(title, slug),
+        alt_text=title,
+        filename_base=slug,
+    )
     if not new_media:
-        print('업로드 실패', file=sys.stderr)
+        print('이미지 획득/업로드 실패', file=sys.stderr)
         sys.exit(1)
     print(f'  신규 media_id={new_media}')
 

@@ -106,7 +106,7 @@ _CATEGORY_QUERIES = {
     'air_purifier':   'air purifier clean indoor',
     'robot_vacuum':   'robot vacuum cleaner smart home',
     'vacuum':         'vacuum cleaner cordless',
-    'microwave':      'microwave oven kitchen',
+    'microwave':      'microwave oven countertop appliance',
     'hair_dryer':     'hair dryer styling beauty',
     'electric_shaver':'electric shaver grooming',
     'food_processor': 'food waste processor kitchen',
@@ -368,50 +368,49 @@ def fetch_pixabay_image_url(product: dict) -> str:
     return ''
 
 
-def _get_image_url(product: dict) -> str:
-    """스펙 제품 발행용 이미지 URL — 4단계 폴백, 항상 이미지 확보 우선.
+def _iter_image_urls_product(product: dict):
+    """스펙 제품 이미지 후보 URL 을 우선순위 순으로 yield.
 
-    우선순위:
+    단계:
       1. catalog_images 매핑 (slug별 공식 URL, 100% 정확)
-      2. 웹검색 (Wikipedia/DDG/og) + 토큰 검증 통과 (정확)
-      3. Pixabay 카테고리 폴백 — 브랜드 배제, 카테고리 일치 보장
+      2. 웹검색 (Wikipedia/DDG/og) + 토큰 검증
+      3. Pixabay 카테고리 폴백 — 브랜드 배제
       4. Unsplash 카테고리 폴백 — 최후 안전망
 
-    엉뚱한 카테고리 이미지(예: 스마트폰 글에 노트북)는 방지하되,
-    실제 제품 사진을 못 구해도 최소 "같은 카테고리" 이미지는 확보.
+    호출측은 업로드 성공할 때까지 순회 (Pixabay 429 등 CDN 실패 대비).
     """
     model    = product.get('model', '')
     brand    = product.get('brand', '')
     category = product.get('category', 'smartphone')
+    slug     = product.get('slug', '')
 
-    # 1. catalog 고정 URL
-    slug  = product.get('slug', '')
     fixed = (product.get('image_url') or _CATALOG_IMAGES.get(slug, '') or '').strip()
     if fixed and _is_usable_image(fixed):
         log.info(f'[1/4] catalog image_url: {brand} {model}')
-        return fixed
+        yield fixed
 
-    # 2. 웹검색 + 검증
     img = fetch_web_image_url(model, brand)
     if img and _image_matches(img, brand, model):
         log.info(f'[2/4] 웹검색 검증 통과: {brand} {model}')
-        return img
-    if img:
+        yield img
+    elif img:
         log.warning(f'웹 이미지 검증 실패, 다음 폴백: {brand} {model}')
 
-    # 3. Pixabay 카테고리 폴백
     img = fetch_pixabay_image_url(product)
     if img:
         log.info(f'[3/4] Pixabay 카테고리 폴백: {category}')
-        return img
+        yield img
 
-    # 4. Unsplash 최후 폴백
     img = _fetch_unsplash_image(category)
     if img:
         log.info(f'[4/4] Unsplash 카테고리 폴백: {category}')
-        return img
+        yield img
 
-    log.error(f'모든 이미지 소스 실패: {brand} {model}')
+
+def _get_image_url(product: dict) -> str:
+    """첫 후보 URL만 반환 (검증/재사용 용). 발행 경로는 _iter_image_urls_product 사용."""
+    for url in _iter_image_urls_product(product):
+        return url
     return ''
 
 
@@ -469,6 +468,28 @@ def upload_image_from_url(image_url: str, alt_text: str = '', filename_base: str
     return 0
 
 
+def _upload_first_ok(url_iter, alt_text: str = '', filename_base: str = '') -> int:
+    """후보 URL 순회하며 업로드 성공하는 첫 URL 의 media_id 반환.
+
+    개별 URL 이 429/timeout/404 등으로 실패해도 다음 후보로 자동 폴백.
+    모든 후보 소진 시 0 반환.
+    """
+    tried = 0
+    for url in url_iter:
+        if not url:
+            continue
+        tried += 1
+        media_id = upload_image_from_url(url, alt_text=alt_text, filename_base=filename_base)
+        if media_id:
+            return media_id
+        log.warning(f'[upload {tried}] 실패, 다음 후보 시도')
+    if tried == 0:
+        log.error('이미지 후보 없음')
+    else:
+        log.error(f'이미지 후보 {tried}개 모두 업로드 실패')
+    return 0
+
+
 # ──────────────────────────────────────────────────────────
 # taxonomy 헬퍼
 # ──────────────────────────────────────────────────────────
@@ -499,8 +520,8 @@ _TECH_IMAGE_QUERIES = {
     'robot vacuum':     'robot vacuum cleaner',
     '식기세척기':       'dishwasher kitchen',
     'dishwasher':       'dishwasher kitchen',
-    '전자레인지':       'microwave oven kitchen',
-    'microwave':        'microwave oven kitchen',
+    '전자레인지':       'microwave oven countertop appliance',
+    'microwave':        'microwave oven countertop appliance',
     '음식물처리기':     'food waste processor kitchen',
     'food-waste':       'food waste processor kitchen',
     '에어컨':           'split air conditioner wall mounted',
@@ -707,18 +728,20 @@ def _title_matches_weak(url: str, title: str, slug: str) -> bool:
     return any(t in hay for t in tokens) if tokens else False
 
 
-def _get_tech_image_url(title: str, slug: str) -> str:
-    """기술·트렌드 글 이미지 — 3단계 폴백, 항상 이미지 확보.
+def _iter_image_urls_tech(title: str, slug: str):
+    """기술·트렌드 글 이미지 후보 URL 을 우선순위 순으로 yield.
 
     1) 웹검색 og:image + 제목 토큰 약한 검증
-    2) Pixabay (_tech_image_query: 키워드 매핑 또는 제목 기반 폴백)
-    3) Unsplash 일반 기술 폴백
+    2) Pixabay (_tech_image_query 매핑 또는 제목 기반)
+    3) Unsplash 최후 폴백
+
+    호출측은 업로드 성공할 때까지 순회 (Pixabay 429 등 CDN 실패 대비).
     """
     img = fetch_web_image_url(title, '')
     if img and _title_matches_weak(img, title, slug):
         log.info(f'[tech 1/3] 웹검색 검증 통과: {title[:40]}')
-        return img
-    if img:
+        yield img
+    elif img:
         log.warning(f'[tech] 웹 이미지 검증 실패, 다음 폴백: {title[:40]}')
 
     query = _tech_image_query(title, slug)
@@ -732,14 +755,25 @@ def _get_tech_image_url(title: str, slug: str) -> str:
         hits = r.json().get('hits', [])
         if hits:
             log.info(f'[tech 2/3] Pixabay: {query!r}')
-            return _random.choice(hits).get('webformatURL', '')
+            # 여러 후보를 무작위 순서로 yield — 한 URL 이 429여도 다음 URL 시도
+            picks = _random.sample(hits, min(5, len(hits)))
+            for hit in picks:
+                url = hit.get('webformatURL', '')
+                if url:
+                    yield url
     except Exception as e:
         log.warning(f'[tech] Pixabay 실패 ({query!r}): {e}')
 
     img = _fetch_unsplash_image('smartphone')
     if img:
         log.info(f'[tech 3/3] Unsplash 폴백')
-        return img
+        yield img
+
+
+def _get_tech_image_url(title: str, slug: str) -> str:
+    """첫 후보 URL만 반환 (유틸리티 호환). 발행 경로는 _iter_image_urls_tech 사용."""
+    for url in _iter_image_urls_tech(title, slug):
+        return url
     return ''
 
 
@@ -760,10 +794,11 @@ def publish_spec_post(product: dict, content_html: str) -> str:
     """product CPT로 스펙 분석 글 발행. 반환: 발행 URL"""
     type_id  = get_or_create_term(product['category'], 'device_type')
 
-    media_id = 0
-    img_url  = _get_image_url(product)
-    if img_url:
-        media_id = upload_image_from_url(img_url, alt_text=product['model'], filename_base=product['slug'])
+    media_id = _upload_first_ok(
+        _iter_image_urls_product(product),
+        alt_text=product['model'],
+        filename_base=product['slug'],
+    )
 
     # 태그: 브랜드 + 카테고리 한글명
     _cat_kr = {
@@ -805,11 +840,12 @@ def publish_tech_post(title: str, slug: str, content_html: str) -> str:
     """기술정보 일반 포스트 발행."""
     cat_id = get_or_create_term('기술정보', 'categories')
 
-    # 이미지: 3단계 폴백 (웹검색+검증 → Pixabay → Unsplash)
-    media_id = 0
-    img_url  = _get_tech_image_url(title, slug)
-    if img_url:
-        media_id = upload_image_from_url(img_url, alt_text=title, filename_base=slug)
+    # 이미지: 3단계 폴백 (웹검색+검증 → Pixabay → Unsplash). 각 단계 업로드 실패 시 다음 후보.
+    media_id = _upload_first_ok(
+        _iter_image_urls_tech(title, slug),
+        alt_text=title,
+        filename_base=slug,
+    )
 
     # 제목에서 2~3개 핵심어 태그 추출 (괄호·특수문자 제거)
     words = re.sub(r'[^\w\s가-힣]', ' ', title).split()
@@ -851,11 +887,12 @@ def publish_trend_post(title: str, slug: str, content_html: str,
                           headers=HEADERS, timeout=10)
         cat_id = r.json().get('id', 0)
 
-    # 이미지: 3단계 폴백 (웹검색+검증 → Pixabay → Unsplash)
-    media_id = 0
-    img_url  = _get_tech_image_url(title, slug)
-    if img_url:
-        media_id = upload_image_from_url(img_url, alt_text=title, filename_base=slug)
+    # 이미지: 3단계 폴백 (웹검색+검증 → Pixabay → Unsplash). 각 단계 업로드 실패 시 다음 후보.
+    media_id = _upload_first_ok(
+        _iter_image_urls_tech(title, slug),
+        alt_text=title,
+        filename_base=slug,
+    )
 
     words = re.sub(r'[^\w\s가-힣]', ' ', title).split()
     tag_names = [w for w in words if len(w) >= 2][:3] + ['트렌드']

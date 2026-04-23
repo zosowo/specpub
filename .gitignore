@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+*.log
+processed_news.json
+published.json
+keyword_history.json
+queue/
+night_stats.json
+pending_telegram.json

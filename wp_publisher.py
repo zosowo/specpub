@@ -388,59 +388,178 @@ def get_or_create_term(name: str, taxonomy: str) -> int:
 # ──────────────────────────────────────────────────────────
 
 # 기술 주제 키워드 → Pixabay 이미지 쿼리 매핑
+# 매칭 우선순위 = dict insertion order. 구체·복합어 먼저 → 포괄 키워드 나중.
 _TECH_IMAGE_QUERIES = {
-    'oled': 'OLED display screen',
-    'amoled': 'OLED display screen',
-    '디스플레이': 'display screen technology',
-    '주사율': 'gaming monitor display',
-    'ltpo': 'smartwatch display',
-    '배터리': 'battery charging technology',
-    '충전': 'wireless charging',
-    '5g': '5G network mobile',
-    'wifi': 'wifi router network',
-    '블루투스': 'bluetooth wireless',
-    'usb': 'USB cable connector',
-    '프로세서': 'computer processor chip',
-    '칩': 'semiconductor chip',
-    'cpu': 'computer processor',
-    'gpu': 'graphics card GPU',
-    'ram': 'computer memory RAM',
-    '카메라': 'camera lens photography',
-    '센서': 'camera sensor photography',
-    '화소': 'camera photography',
-    '손떨림': 'camera stabilization',
-    '노이즈': 'audio sound wave',
-    'anc': 'headphones noise cancelling',
-    '공간음향': 'spatial audio headphones',
-    '돌비': 'home theater audio',
-    'hdr': 'HDR display television',
-    '냉각': 'cooling fan heat',
-    '방열': 'cooling technology',
-    '방수': 'waterproof electronics',
-    '재활용': 'recycling sustainability green',
-    '친환경': 'eco friendly sustainable green',
-    '에너지': 'energy efficiency solar',
-    '인버터': 'air conditioner inverter',
-    '필터': 'air filter purifier',
-    '흡입': 'vacuum cleaner',
-    '로봇': 'robot vacuum smart home',
-    '세탁': 'washing machine laundry',
-    '냉장': 'refrigerator kitchen',
-    '헤어': 'hair dryer beauty',
-    '면도': 'electric shaver grooming',
-    '음식물': 'food waste kitchen',
-    '전자레인지': 'microwave oven kitchen',
+    # ── 가전 카테고리 (구체 우선, slug 영문도 포함) ──
+    '공기청정기':       'air purifier home clean',
+    'air-purifier':     'air purifier home clean',
+    'air purifier':     'air purifier home clean',
+    '로봇청소기':       'robot vacuum cleaner',
+    'robot-vacuum':     'robot vacuum cleaner',
+    'robot vacuum':     'robot vacuum cleaner',
+    '식기세척기':       'dishwasher kitchen',
+    'dishwasher':       'dishwasher kitchen',
+    '전자레인지':       'microwave oven kitchen',
+    'microwave':        'microwave oven kitchen',
+    '음식물처리기':     'food waste processor kitchen',
+    'food-waste':       'food waste processor kitchen',
+    '에어컨':           'air conditioner room interior',
+    'air-conditioner':  'air conditioner room interior',
+    'air conditioner':  'air conditioner room interior',
+    '세탁기':           'washing machine laundry',
+    'washing-machine':  'washing machine laundry',
+    'washing machine':  'washing machine laundry',
+    '건조기':           'clothes dryer laundry',
+    'dryer':            'clothes dryer laundry',
+    '냉장고':           'refrigerator kitchen',
+    'refrigerator':     'refrigerator kitchen',
+    '밥솥':             'rice cooker kitchen',
+    'rice-cooker':      'rice cooker kitchen',
+    '헤어드라이어':     'hair dryer beauty',
+    'hair-dryer':       'hair dryer beauty',
+    '면도기':           'electric shaver grooming',
+    'shaver':           'electric shaver grooming',
+    '청소기':           'vacuum cleaner home',
+    'vacuum':           'vacuum cleaner home',
+    '제습기':           'dehumidifier humidity home',
+    'dehumidifier':     'dehumidifier humidity home',
+    '정수기':           'water purifier kitchen',
+    'water-purifier':   'water purifier kitchen',
+    '비데':             'bathroom modern interior',
+    '안마의자':         'massage chair relax',
+    '커피머신':         'coffee machine espresso',
+
+    # ── 디스플레이·영상 ──
+    '사운드바':         'soundbar audio home theater',
+    'soundbar':         'soundbar audio home theater',
+    'oled':             'OLED television display',
+    'qled':             'QLED television display',
+    'amoled':           'AMOLED display screen',
+    '티비':             'television living room',
+    'tv':               'television living room',
+    '모니터':           'computer monitor desk',
+    'monitor':          'computer monitor desk',
+    '디스플레이':       'display screen technology',
+    '주사율':           'gaming monitor display',
+    'ltpo':             'smartwatch display',
+    'hdr':              'HDR display television',
+
+    # ── 모바일·웨어러블 ──
+    '스마트워치':       'smartwatch wrist technology',
+    'smartwatch':       'smartwatch wrist technology',
+    '스마트밴드':       'fitness tracker wristband',
+    '에어팟':           'wireless earbuds apple',
+    'airpods':          'wireless earbuds apple',
+    '갤럭시 버즈':      'wireless earbuds case',
+    '버즈':             'wireless earbuds case',
+    '이어폰':           'wireless earbuds headphone',
+    'earphone':         'wireless earbuds headphone',
+    'earbuds':          'wireless earbuds headphone',
+    '헤드폰':           'headphones music audio',
+    'headphone':        'headphones music audio',
+    'headset':          'gaming headset audio',
+    '헤드셋':           'gaming headset audio',
+    '아이폰':           'smartphone apple modern',
+    'iphone':           'smartphone apple modern',
+    '갤럭시':           'smartphone samsung modern',
+    'galaxy':           'smartphone samsung modern',
+    '스마트폰':         'smartphone mobile device',
+    'smartphone':       'smartphone mobile device',
+    '아이패드':         'tablet apple reading',
+    'ipad':             'tablet apple reading',
+    '태블릿':           'tablet computer reading',
+    'tablet':           'tablet computer reading',
+    '맥북':             'macbook laptop apple',
+    'macbook':          'macbook laptop apple',
+    '노트북':           'laptop computer work',
+    'laptop':           'laptop computer work',
+
+    # ── 스피커·카메라·게임 ──
+    '블루투스 스피커': 'bluetooth speaker audio',
+    '스피커':           'bluetooth speaker audio',
+    'speaker':          'bluetooth speaker audio',
+    '카메라':           'camera lens photography',
+    'camera':           'camera lens photography',
+    '센서':             'camera sensor photography',
+    '화소':             'camera photography',
+    '손떨림':           'camera stabilization',
+    '미러리스':         'mirrorless camera photography',
+    '게임기':           'game console controller',
+    '콘솔':             'game console controller',
+    'playstation':      'playstation game console',
+    'xbox':             'xbox game console',
+    '닌텐도':           'nintendo switch console',
+
+    # ── 주변기기·연결 ──
+    '키보드':           'mechanical keyboard desk',
+    'keyboard':         'mechanical keyboard desk',
+    '마우스':           'computer mouse desk',
+    '프린터':           'office printer',
+    'printer':          'office printer',
+    '충전기':           'usb charger cable',
+    '보조배터리':       'power bank portable',
+    'power-bank':       'power bank portable',
+    '배터리':           'battery charging technology',
+    '충전':             'wireless charging',
+    '5g':               '5G network mobile',
+    '6g':               '6G network future',
+    'wifi':             'wifi router network',
+    '블루투스':         'bluetooth wireless',
+    'bluetooth':        'bluetooth wireless',
+    'usb':              'USB cable connector',
+
+    # ── 반도체·컴퓨팅 ──
+    '프로세서':         'computer processor chip',
+    '반도체':           'semiconductor chip wafer',
+    'semiconductor':    'semiconductor chip wafer',
+    '칩':               'semiconductor chip',
+    'cpu':              'computer processor',
+    'gpu':              'graphics card GPU',
+    'ram':              'computer memory RAM',
+    'ssd':              'SSD storage technology',
+
+    # ── 오디오·기타 기술 개념 ──
+    '공간음향':         'spatial audio headphones',
+    '돌비':             'home theater audio',
+    'anc':              'headphones noise cancelling',
+    '노이즈':           'audio sound wave',
+
+    # ── 효율·친환경·안전 ──
+    '냉각':             'cooling fan heat',
+    '방열':             'cooling technology',
+    '방수':             'waterproof electronics',
+    '재활용':           'recycling sustainability green',
+    '친환경':           'eco friendly sustainable green',
+    '에너지':           'energy efficiency home',
+    '에너지 효율':     'energy efficiency home',
+    '인버터':           'inverter technology efficient',
+    '필터':             'air filter purifier',
+    '흡입':             'vacuum cleaner suction',
+    '로봇':             'robot home automation',
+    '미세먼지':         'air pollution particulate',
+    '냉매':             'refrigerator compressor',
+
+    # ── 보안·사기 (생활 정보) ──
+    '보이스피싱':       'phone scam fraud security',
+    '피싱':             'phishing cyber security',
+
+    # ── 생활/식품 ──
+    '생수':             'bottled water glass',
+    '미네랄':           'bottled water mineral',
+    '유산균':           'probiotic supplement capsule',
+    '다이어트':         'fitness diet wellness',
 }
 
 import random as _random
 
 def _tech_image_query(title: str, slug: str) -> str:
-    """제목/슬러그 키워드로 적절한 Pixabay 쿼리 반환."""
+    """제목/슬러그 키워드로 적절한 Pixabay 쿼리 반환. 매칭 실패는 로그로 추적."""
     text = (title + ' ' + slug).lower()
     for keyword, query in _TECH_IMAGE_QUERIES.items():
-        if keyword in text:
+        if keyword.lower() in text:
             return query
-    return 'technology gadget modern'
+    log.warning(f'[이미지 매핑 미스] title={title!r} slug={slug!r} — 중성 폴백 사용')
+    return 'home electronics appliance'  # smartphone 편향 회피
 
 
 def _get_or_create_tags(tag_names: list[str]) -> list[int]:
@@ -503,22 +622,25 @@ def publish_tech_post(title: str, slug: str, content_html: str) -> str:
     """기술정보 일반 포스트 발행."""
     cat_id = get_or_create_term('기술정보', 'categories')
 
-    # 주제별 이미지 쿼리
+    # 이미지: 웹검색(DDG+Wikipedia+og:image) → Pixabay(주제별 쿼리) 폴백
     media_id = 0
-    query = _tech_image_query(title, slug)
-    try:
-        r = requests.get(
-            'https://pixabay.com/api/',
-            params={'key': PIXABAY_KEY, 'q': query, 'image_type': 'photo',
-                    'orientation': 'horizontal', 'per_page': 10, 'safesearch': 'true'},
-            timeout=10,
-        )
-        hits = r.json().get('hits', [])
-        if hits:
-            img_url  = _random.choice(hits).get('webformatURL', '')
-            media_id = upload_image_from_url(img_url, slug)
-    except Exception:
-        pass
+    img_url  = fetch_web_image_url(title, '')
+    if not img_url:
+        query = _tech_image_query(title, slug)
+        try:
+            r = requests.get(
+                'https://pixabay.com/api/',
+                params={'key': PIXABAY_KEY, 'q': query, 'image_type': 'photo',
+                        'orientation': 'horizontal', 'per_page': 10, 'safesearch': 'true'},
+                timeout=10,
+            )
+            hits = r.json().get('hits', [])
+            if hits:
+                img_url = _random.choice(hits).get('webformatURL', '')
+        except Exception as e:
+            log.warning(f'기술정보 Pixabay 폴백 실패: {e}')
+    if img_url:
+        media_id = upload_image_from_url(img_url, slug)
 
     # 제목에서 2~3개 핵심어 태그 추출 (괄호·특수문자 제거)
     import re as _re
@@ -559,21 +681,25 @@ def publish_trend_post(title: str, slug: str, content_html: str,
                           headers=HEADERS, timeout=10)
         cat_id = r.json().get('id', 0)
 
+    # 이미지: 웹 검색(DDG+Wikipedia+og:image) → Pixabay 폴백
     media_id = 0
-    query = _tech_image_query(title, slug)
-    try:
-        r = requests.get(
-            'https://pixabay.com/api/',
-            params={'key': PIXABAY_KEY, 'q': query, 'image_type': 'photo',
-                    'orientation': 'horizontal', 'per_page': 10, 'safesearch': 'true'},
-            timeout=10,
-        )
-        hits = r.json().get('hits', [])
-        if hits:
-            img_url  = _random.choice(hits).get('webformatURL', '')
-            media_id = upload_image_from_url(img_url, slug)
-    except Exception:
-        pass
+    img_url  = fetch_web_image_url(title, '')
+    if not img_url:
+        query = _tech_image_query(title, slug)
+        try:
+            r = requests.get(
+                'https://pixabay.com/api/',
+                params={'key': PIXABAY_KEY, 'q': query, 'image_type': 'photo',
+                        'orientation': 'horizontal', 'per_page': 10, 'safesearch': 'true'},
+                timeout=10,
+            )
+            hits = r.json().get('hits', [])
+            if hits:
+                img_url = _random.choice(hits).get('webformatURL', '')
+        except Exception as e:
+            log.warning(f'트렌드 Pixabay 폴백 실패: {e}')
+    if img_url:
+        media_id = upload_image_from_url(img_url, slug)
 
     import re as _re
     words = _re.sub(r'[^\w\s가-힣]', ' ', title).split()

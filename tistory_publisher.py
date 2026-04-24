@@ -44,7 +44,11 @@ _UA = (
 
 
 def _set_tinymce_content(page, html_body: str) -> None:
-    """TinyMCE 본문에 HTML 세팅. JS API 직접 호출."""
+    """TinyMCE 본문에 HTML 세팅 후 textarea 로 sync 강제.
+
+    setContent 만으로는 iframe 내부 표시만 갱신되고 제출 시 데이터가 비어있음.
+    save() 가 textarea(#editor-tistory)로 직렬화하여 폼 제출에 반영시킨다.
+    """
     page.evaluate(
         """(html) => {
           if (typeof tinymce === 'undefined') {
@@ -55,6 +59,15 @@ def _set_tinymce_content(page, html_body: str) -> None:
             throw new Error('editor-tistory 인스턴스 없음');
           }
           ed.setContent(html);
+          ed.fire('change');
+          ed.fire('input');
+          ed.save();
+          // textarea 에 input 이벤트도 디스패치 (React 상태 반영)
+          const ta = document.getElementById('editor-tistory');
+          if (ta) {
+            const evt = new Event('input', {bubbles: true});
+            ta.dispatchEvent(evt);
+          }
         }""",
         html_body,
     )
@@ -198,6 +211,19 @@ def publish_post(
                     raise RuntimeError('임시저장 버튼 찾기 실패')
                 page.wait_for_timeout(2500)
                 return f'{BLOG_URL.rstrip("/")}/manage/posts'
+
+            # 발행 직전 본문 한번 더 sync (모달 오픈시 form snapshot 보장)
+            try:
+                page.evaluate(
+                    """() => {
+                      if (typeof tinymce !== 'undefined') {
+                        const ed = tinymce.get('editor-tistory');
+                        if (ed) ed.save();
+                      }
+                    }"""
+                )
+            except Exception:
+                pass
 
             # 공개/비공개: '완료' 클릭 → 모달 → 라디오 → publish-btn
             page.click('#publish-layer-btn')

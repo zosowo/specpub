@@ -77,6 +77,12 @@ def _enter_tags(page, tags: list[str]) -> None:
     """태그 input 에 엔터로 하나씩 추가."""
     if not tags:
         return
+    # tagText 로딩 대기 (편집 페이지에서 늦게 렌더될 수 있음)
+    try:
+        page.wait_for_selector('#tagText', timeout=15000)
+    except Exception:
+        log.warning('[tistory] #tagText 못찾음 — 태그 입력 skip')
+        return
     # 포커스
     page.click('#tagText')
     for t in tags:
@@ -114,11 +120,13 @@ def publish_post(
     tags: Optional[list[str]] = None,
     visibility: str = 'public',
     category_name: Optional[str] = None,
+    post_id: Optional[int] = None,
     timeout_sec: int = 75,
 ) -> str:
     """
-    티스토리 발행.
+    티스토리 발행 (신규) 또는 업데이트 (기존).
 
+    post_id 가 주어지면 해당 글을 편집 — URL=/manage/newpost/<id> 로 진입.
     반환: 발행된 글 URL (공개/비공개: 실제 글 URL / 임시저장: 관리 URL).
     실패 시 RuntimeError 전파.
     """
@@ -138,21 +146,23 @@ def publish_post(
             ctx = browser.new_context(storage_state=STORAGE_FILE, user_agent=_UA)
             page = ctx.new_page()
             page.set_default_timeout(timeout_sec * 1000)
-            page.goto(WRITE_URL, wait_until='domcontentloaded')
+            target = f'{WRITE_URL}{post_id}' if post_id else WRITE_URL
+            page.goto(target, wait_until='domcontentloaded')
 
-            # 임시저장 복원 팝업이 뜨면 '취소' (있으면)
             page.wait_for_timeout(1500)
-            try:
-                page.evaluate(
-                    """() => {
-                      const btns = Array.from(document.querySelectorAll('button, a'));
-                      const cancel = btns.find(b => /취소|아니오|새로 작성|새글/.test((b.textContent||'').trim()));
-                      if (cancel) cancel.click();
-                    }"""
-                )
-            except Exception:
-                pass
-            page.wait_for_timeout(500)
+            # 임시저장 복원 팝업이 뜨면 '새로 작성' — 신규 작성시에만 (편집시엔 스킵)
+            if post_id is None:
+                try:
+                    page.evaluate(
+                        """() => {
+                          const btns = Array.from(document.querySelectorAll('button, a'));
+                          const newOne = btns.find(b => /새로 작성|새글/.test((b.textContent||'').trim()));
+                          if (newOne) newOne.click();
+                        }"""
+                    )
+                except Exception:
+                    pass
+                page.wait_for_timeout(500)
 
             # 에디터 로딩 대기
             page.wait_for_selector('#post-title-inp', timeout=15000)

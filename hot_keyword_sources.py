@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import html as _html
 import json
 import logging
 import os
@@ -30,6 +31,11 @@ import subprocess
 from urllib.parse import quote
 
 import requests
+
+try:
+    import feedparser  # Google News RSS · Naver DataLab 는 직접 파싱
+except ImportError:
+    feedparser = None
 
 log = logging.getLogger(__name__)
 
@@ -49,22 +55,28 @@ def _normalize(kw: str) -> str:
 # ──────────────────────────────────────────────────────────
 # 1. Google Trends (pytrends) 한국 일간 급상승
 # ──────────────────────────────────────────────────────────
+#
+# 2025~ Google 이 내부 엔드포인트 변경으로 pytrends.trending_searches 가
+# 404 를 상시 반환. 환경변수 `PYTRENDS_ENABLED=1` 일 때만 시도하고, 기본은
+# skip. related_queries 도 같은 엔드포인트 계열이라 상황 동일.
 
 def fetch_google_trends(limit: int = 30) -> list[dict]:
+    if os.getenv('PYTRENDS_ENABLED', '0') != '1':
+        return []
     try:
         from pytrends.request import TrendReq
     except Exception as e:
-        log.warning(f'pytrends 임포트 실패: {e}')
+        log.debug(f'pytrends 임포트 실패: {e}')
         return []
 
     try:
-        pt = TrendReq(hl='ko-KR', tz=540, retries=0)
+        pt = TrendReq(hl='ko-KR', tz=540, retries=0, timeout=(5, 8))
         df = pt.trending_searches(pn='south_korea')
         if df is None or df.empty:
             return []
         kws = df[0].tolist()
     except Exception as e:
-        log.warning(f'Google Trends 실패 (차단 가능): {e}')
+        log.debug(f'Google Trends skip: {e}')
         return []
 
     out = []
@@ -79,6 +91,149 @@ def fetch_google_trends(limit: int = 30) -> list[dict]:
         if len(out) >= limit:
             break
     log.info(f'Google Trends: {len(out)}개')
+    return out
+
+
+# ──────────────────────────────────────────────────────────
+# 1-b. Google News RSS 한국 (주 소스)
+# ──────────────────────────────────────────────────────────
+#
+# 공식 피드, API 키 불필요. 전체 헤드라인 + 토픽별(TECHNOLOGY/BUSINESS/
+# ENTERTAINMENT/SPORTS/HEALTH/SCIENCE).  전체 제목에서 핵심 명사구만 추출
+# 하여 seed 로 사용. Claude 분류기가 연예·정치·스포츠·사건사고 제외.
+
+_GN_FEEDS = [
+    ('top',           'https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko'),
+    ('technology',    'https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=ko&gl=KR&ceid=KR:ko'),
+    ('business',      'https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=ko&gl=KR&ceid=KR:ko'),
+    ('entertainment', 'https://news.google.com/rss/headlines/section/topic/ENTERTAINMENT?hl=ko&gl=KR&ceid=KR:ko'),
+    ('health',        'https://news.google.com/rss/headlines/section/topic/HEALTH?hl=ko&gl=KR&ceid=KR:ko'),
+    ('science',       'https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=ko&gl=KR&ceid=KR:ko'),
+]
+
+
+def _strip_source(title: str) -> str:
+    """Google News 제목 말미의 ' - 언론사' 제거."""
+    # " - XXX뉴스" / " - 매일경제" 같은 패턴
+    return re.sub(r'\s+-\s+[^-]+$', '', title).strip()
+
+
+def fetch_google_news_rss(per_feed: int = 8) -> list[dict]:
+    if feedparser is None:
+        log.warning('feedparser 미설치 — Google News RSS skip')
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for label, url in _GN_FEEDS:
+        try:
+            feed = feedparser.parse(url, request_headers={'User-Agent': _UA})
+        except Exception as e:
+            log.debug(f'Google News feed {label} 실패: {e}')
+            continue
+        count = 0
+        for entry in feed.entries[:20]:
+            title = _html.unescape(getattr(entry, 'title', '') or '').strip()
+            if not title:
+                continue
+            kw = _strip_source(title)
+            if len(kw) < 4 or len(kw) > 80:
+                continue
+            n = _normalize(kw)
+            if n in seen:
+                continue
+            seen.add(n)
+            out.append({
+                'keyword': kw,
+                'source':  f'gnews_{label}',
+                'related': [],
+            })
+            count += 1
+            if count >= per_feed:
+                break
+    log.info(f'Google News RSS: {len(out)}개 ({len(_GN_FEEDS)}개 피드)')
+    return out
+
+
+# ──────────────────────────────────────────────────────────
+# 1-c. 네이버 데이터랩 쇼핑인사이트 (키·시크릿 필요)
+# ──────────────────────────────────────────────────────────
+#
+# developers.naver.com 앱 등록 + DataLab 권한 필요. 없으면 skip (조용히).
+# 검색어트렌드 API 는 "키워드 지정" 필요 → 탐색 용도 아님.
+# 여기선 쇼핑인사이트의 category top keywords 를 활용.
+
+_NAVER_CLIENT_ID     = os.getenv('NAVER_CLIENT_ID', '').strip()
+_NAVER_CLIENT_SECRET = os.getenv('NAVER_CLIENT_SECRET', '').strip()
+
+# 쇼핑 인사이트 상위 카테고리 (네이버 쇼핑 cid) — 범용·안전한 것만
+_NAVER_CATEGORIES = [
+    ('50000000', '패션의류'),
+    ('50000001', '패션잡화'),
+    ('50000003', '디지털/가전'),
+    ('50000004', '가구/인테리어'),
+    ('50000005', '출산/육아'),
+    ('50000006', '식품'),
+    ('50000008', '생활/건강'),
+    ('50000009', '여가/생활편의'),
+]
+
+
+def fetch_naver_shopping_top(per_cat: int = 5) -> list[dict]:
+    """네이버 쇼핑인사이트 카테고리별 상위 검색 키워드. 크레덴셜 없으면 skip."""
+    if not (_NAVER_CLIENT_ID and _NAVER_CLIENT_SECRET):
+        log.debug('NAVER_CLIENT_ID/SECRET 미설정 — DataLab skip')
+        return []
+
+    from datetime import date, timedelta
+    end   = date.today()
+    start = end - timedelta(days=7)
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for cid, cname in _NAVER_CATEGORIES:
+        try:
+            r = requests.post(
+                'https://openapi.naver.com/v1/datalab/shopping/category/keywords',
+                headers={
+                    'X-Naver-Client-Id':     _NAVER_CLIENT_ID,
+                    'X-Naver-Client-Secret': _NAVER_CLIENT_SECRET,
+                    'Content-Type':          'application/json',
+                },
+                json={
+                    'startDate': start.strftime('%Y-%m-%d'),
+                    'endDate':   end.strftime('%Y-%m-%d'),
+                    'timeUnit':  'date',
+                    'category':  cid,
+                    'keyword':   [{'name': cname, 'param': [cname]}],
+                    'device':    '',
+                    'gender':    '',
+                    'ages':      [],
+                },
+                timeout=10,
+            )
+            # 카테고리별 top keywords 는 별도 엔드포인트가 필요할 수 있음.
+            # 스캐폴드 단계 — 실패해도 조용히 넘어감.
+            if r.status_code != 200:
+                log.debug(f'DataLab {cname} {r.status_code}: {r.text[:120]}')
+                continue
+            # 응답에서 title 필드 추출 (그 자체가 카테고리명이므로 seed 로 사용)
+            data = r.json()
+            for result in data.get('results', [])[:per_cat]:
+                kw = str(result.get('title', '')).strip()
+                n = _normalize(kw)
+                if not n or n in seen or len(kw) < 3:
+                    continue
+                seen.add(n)
+                out.append({
+                    'keyword': kw,
+                    'source':  f'naver_shopping_{cname}',
+                    'related': [],
+                })
+        except Exception as e:
+            log.debug(f'DataLab {cname} 오류: {e}')
+            continue
+    if out:
+        log.info(f'Naver DataLab Shopping: {len(out)}개')
     return out
 
 
@@ -217,21 +372,18 @@ _CATEGORY_PROMPT = """다음은 한국어 트렌드 키워드 목록입니다. �
 """
 
 
-def classify_keywords_for_tistory(keywords: list[str]) -> list[dict]:
-    """Claude CLI 로 키워드를 카테고리 분류. 허용 카테고리만 반환."""
-    if not keywords:
-        return []
+_CLASSIFY_BATCH = 25  # Haiku 가 60초 안에 JSON 출력 가능한 안전치
 
+
+def _classify_batch(keywords: list[str]) -> list[dict]:
     allow = {'it', 'shopping', 'travel', 'movie', 'game',
              'newproduct', 'food', 'auto', 'health', 'finance', 'guide'}
-
     numbered = '\n'.join(f'{i+1}. {k}' for i, k in enumerate(keywords))
     prompt = _CATEGORY_PROMPT.format(keywords=numbered)
-
     try:
         result = subprocess.run(
             [CLAUDE_BIN, '--model', CLAUDE_CLASSIFY_MODEL, '-p', prompt],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=90,
         )
         raw = (result.stdout or '').strip()
         m = re.search(r'\[[\s\S]*\]', raw)
@@ -252,7 +404,22 @@ def classify_keywords_for_tistory(keywords: list[str]) -> list[dict]:
         if not kw or cat not in allow:
             continue
         kept.append({'keyword': kw, 'category': cat})
-    log.info(f'[classify] 입력 {len(keywords)} → 허용 {len(kept)}개')
+    return kept
+
+
+def classify_keywords_for_tistory(keywords: list[str]) -> list[dict]:
+    """Claude CLI 로 키워드를 카테고리 분류. 허용 카테고리만 반환.
+
+    대용량 입력은 _CLASSIFY_BATCH 크기로 배치 분할 (Haiku timeout 방지).
+    """
+    if not keywords:
+        return []
+    kept: list[dict] = []
+    for i in range(0, len(keywords), _CLASSIFY_BATCH):
+        batch = keywords[i:i + _CLASSIFY_BATCH]
+        kept.extend(_classify_batch(batch))
+    log.info(f'[classify] 입력 {len(keywords)} → 허용 {len(kept)}개 '
+             f'({(len(keywords)+_CLASSIFY_BATCH-1)//_CLASSIFY_BATCH}배치)')
     return kept
 
 
@@ -279,10 +446,17 @@ def collect_hot_keywords(target_count: int = 6) -> list[dict]:
         seen.add(n)
         pool.append(item)
 
-    for item in fetch_google_trends(limit=30):
+    # 우선순위: Google News RSS → YouTube Trending → Naver DataLab → Google Trends(legacy)
+    for item in fetch_google_news_rss(per_feed=8):
         _add(item)
 
     for item in fetch_youtube_trending(limit=20):
+        _add(item)
+
+    for item in fetch_naver_shopping_top(per_cat=5):
+        _add(item)
+
+    for item in fetch_google_trends(limit=30):
         _add(item)
 
     if not pool:

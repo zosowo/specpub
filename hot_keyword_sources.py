@@ -53,6 +53,38 @@ def _normalize(kw: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────
+# 하드블록 패턴 (Claude 분류 호출 전 선필터 — 토큰·시간 절약)
+# ──────────────────────────────────────────────────────────
+_HARDBLOCK_PATTERNS = [
+    # 정치·정부·정당
+    r'국힘|국민의힘|민주당|정의당|개혁신당|조국혁신|윤석열|이재명|한동훈|'
+    r'장동혁|배현진|주호영|오세훈|박지원|조희대|검찰|특검|수사|영장|기소|'
+    r'재판|압수수색|국정감사|청문회|의원|당대표|대통령|대선|총선|지선|'
+    r'지방선거|여야|야당|여당|탄핵|국회',
+    # 사건사고·범죄·부정
+    r'사망|숨져|숨진|살해|피살|시신|참사|폭행|성추행|성폭행|마약|탈세|사기|'
+    r'구속|연행|체포|추락|실종|화재|폭발|붕괴|추돌|충돌사고|뺑소니|절도|'
+    r'강도|학대|자살|극단선택',
+    # 기업 부정적 노동·구조조정 이슈 (애드센스 민감)
+    r'피바람|해고|감원|구조조정|파업|노조 집회|임금 체불|갑질|정리해고|'
+    r'짐 싸라|희망퇴직',
+    # 연예인 가십 주요 패턴
+    r'열애|이혼|결혼설|임신설|사생활|결별|스캔들|소속사|매니저|'
+    r'폭로|고소|법정|소송',
+    # 스포츠 경기결과·선수 이슈
+    r'홈런|타율|선발투수|프로야구|KBO|KBL|V리그|K리그|프로축구|우승|패배|득점왕|MVP',
+    # 종교
+    r'성경|목사|기독교|불교|천주교|힌두교|이슬람교',
+]
+_HARDBLOCK_RE = re.compile('|'.join(_HARDBLOCK_PATTERNS))
+
+
+def _is_blocked(kw: str) -> bool:
+    """하드블록 — 애드센스 정책상 확실히 부적합한 키워드."""
+    return bool(_HARDBLOCK_RE.search(kw or ''))
+
+
+# ──────────────────────────────────────────────────────────
 # 1. Google Trends (pytrends) 한국 일간 급상승
 # ──────────────────────────────────────────────────────────
 #
@@ -428,11 +460,17 @@ def collect_hot_keywords(target_count: int = 6) -> list[dict]:
     """
     pool: list[dict] = []
     seen: set[str] = set()
+    blocked_ct = 0
 
     def _add(item: dict):
+        nonlocal blocked_ct
         kw = item['keyword']
         # 너무 짧은 키워드 (3글자 이하) 는 본문/SEO 부적합
         if len(kw.strip()) < 4:
+            return
+        # 하드블록 (정치·사건사고·연예가십·스포츠·종교)
+        if _is_blocked(kw):
+            blocked_ct += 1
             return
         n = _normalize(kw)
         if not n or n in seen:
@@ -440,18 +478,20 @@ def collect_hot_keywords(target_count: int = 6) -> list[dict]:
         seen.add(n)
         pool.append(item)
 
-    # 우선순위: Google News RSS → YouTube Trending → Naver DataLab → Google Trends(legacy)
-    for item in fetch_google_news_rss(per_feed=8):
+    # 우선순위: Google News RSS → YouTube Trending → Naver News → pytrends(비활성)
+    for item in fetch_google_news_rss(per_feed=5):
         _add(item)
 
-    for item in fetch_youtube_trending(limit=20):
+    for item in fetch_youtube_trending(limit=15):
         _add(item)
 
-    for item in fetch_naver_news_search(per_query=8):
+    for item in fetch_naver_news_search(per_query=5):
         _add(item)
 
     for item in fetch_google_trends(limit=30):
         _add(item)
+
+    log.info(f'[hot] 풀 {len(pool)}개 (하드블록 제거 {blocked_ct}건)')
 
     if not pool:
         log.warning('[hot] 풀 비어있음 — 모든 소스 실패')

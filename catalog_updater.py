@@ -485,12 +485,12 @@ def append_to_catalog(new_products: list[dict], new_topics: list[dict]):
 # 메인 실행
 # ──────────────────────────────────────────────────────────
 
-def run():
-    log.info('=== 월간 카탈로그 갱신 시작 ===')
+def run(topics_count: int = 60):
+    log.info(f'=== 카탈로그 갱신 시작 (topics_count={topics_count}) ===')
     existing = load_existing_slugs()
 
     # ── 1. 기술 주제 자동 생성
-    new_topics = generate_new_topics(existing, count=60)
+    new_topics = generate_new_topics(existing, count=topics_count)
     log.info(f'새 기술 주제 {len(new_topics)}개 생성')
 
     # ── 2. 신제품 검증 및 수집
@@ -562,7 +562,13 @@ def run():
 
 
 if __name__ == '__main__':
-    result = run()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--topics', type=int, default=60,
+                        help='기술 주제 추가 개수 (주간 실행 시 15 권장, 월간 60)')
+    args = parser.parse_args()
+
+    result = run(topics_count=args.topics)
     print(f'\n완료: 제품 +{result["added_products"]}, 주제 +{result["added_topics"]}, '
           f'실패 {result["failed"]}개')
     if result['failed_list']:

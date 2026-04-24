@@ -6,5 +6,11 @@ processed_news.json
 published.json
 keyword_history.json
 queue/
+queue_pending/
+tistory_queue/
+tistory_queue_pending/
+tistory_cookies.json
+tistory_storage.json
+tistory_published.json
 night_stats.json
 pending_telegram.json

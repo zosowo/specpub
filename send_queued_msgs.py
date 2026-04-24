@@ -45,7 +45,7 @@ def build_summary() -> str:
     stats   = _load_json(STATS_F)  or {}
     pending = _load_json(PENDING_F) or []
 
-    lines = [f'🌅 *[스펙분석소] 야간 작업 요약* ({today_label})', '']
+    lines = [f'[Wordpress] 🌅 *야간 작업 요약* ({today_label})', '']
 
     gen = stats.get('generate')
     if gen:
@@ -80,7 +80,11 @@ def build_summary() -> str:
         lines.append(f'⚠️ *야간 알림 ({len(pending)}건):*')
         for m in pending:
             lines.append('')
-            lines.append(m['text'])
+            text = m['text']
+            # 상위 요약이 [Wordpress] 로 시작하므로 하위 메시지의 중복 prefix 제거
+            if text.startswith('[Wordpress] '):
+                text = text[len('[Wordpress] '):]
+            lines.append(text)
 
     return '\n'.join(lines)
 

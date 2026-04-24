@@ -313,11 +313,11 @@ def run(date_str: str, n: int = TREND_PER_DAY):
         log.info(f'[트렌드] 생성: {title} (score={topic.get("score")}, hot={is_hot})')
 
         try:
-            html = cg.generate_trend_post(topic)
+            html, hints = cg.generate_trend_post(topic)
             ok, reason = cg.verify_trend_content(html)
             if not ok:
                 log.warning(f'  검증 실패: {reason} — 재시도')
-                html = cg.generate_trend_post(topic)
+                html, hints = cg.generate_trend_post(topic)
                 ok, reason = cg.verify_trend_content(html)
             if not ok:
                 log.error(f'  재시도 실패: {reason} — 건너뜀')
@@ -331,6 +331,7 @@ def run(date_str: str, n: int = TREND_PER_DAY):
             'slug':         slug,
             'title':        title,
             'content_html': html,
+            'image_hints':  hints,
             'product':      None,
             'keywords':     kws,
             'is_hot':       is_hot,

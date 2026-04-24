@@ -1,10 +1,58 @@
 """Claude CLI를 통한 콘텐츠 생성 — 스펙분석 / 기술정보."""
+import hashlib
+import json
+import logging
+import os
 import subprocess
+import tempfile
 import re
+
+import requests
 
 
 CLAUDE_BIN = '/home/zosowo/.nvm/versions/node/v24.14.0/bin/claude'
 MODEL = 'claude-sonnet-4-6'
+VISION_MODEL = 'claude-haiku-4-5'  # 이미지 적합도 yes/no 판정용 (Haiku 가 빠름)
+
+log = logging.getLogger(__name__)
+
+# 이미지 힌트 주석 형식: <!--IMAGE_HINTS: {"products":[...],"keywords":[...],"category":"..."}-->
+_IMAGE_HINTS_RE = re.compile(
+    r'<!--\s*IMAGE_HINTS\s*:\s*(\{.*?\})\s*-->', re.DOTALL
+)
+
+_IMAGE_HINTS_INSTRUCTION = """
+- **마지막 줄에만** 다음 형식의 HTML 주석을 한 줄로 추가하시오 (이미지 검색용 메타데이터):
+  <!--IMAGE_HINTS: {"products":["실제 제품명 1~3개"],"keywords":["영문 검색 키워드 2~3개"],"category":"주요 카테고리"}-->
+  - products: 본문에서 언급한 구체적 제품명 (예: "Apple AirTag", "Samsung Galaxy SmartTag"). 없으면 빈 배열.
+  - keywords: Pixabay 영어 검색어 2~3개. 제품 유형을 명확히 (예: "bluetooth tracker", "wireless earbuds").
+  - category: 한 단어 영문 카테고리 (예: "tracker", "earphone", "laptop").
+"""
+
+
+def _extract_image_hints(html: str) -> tuple[str, dict]:
+    """본문 HTML 에서 IMAGE_HINTS 주석 파싱. 반환: (주석 제거한 HTML, hints dict).
+
+    파싱 실패 시 hints={}. 본문은 항상 사용 가능 상태로 유지.
+    """
+    m = _IMAGE_HINTS_RE.search(html)
+    if not m:
+        return html, {}
+    raw = m.group(1)
+    cleaned = _IMAGE_HINTS_RE.sub('', html).strip()
+    try:
+        hints = json.loads(raw)
+        if not isinstance(hints, dict):
+            return cleaned, {}
+        # 필드 타입 정규화
+        return cleaned, {
+            'products': [str(x) for x in hints.get('products') or [] if x],
+            'keywords': [str(x) for x in hints.get('keywords') or [] if x],
+            'category': str(hints.get('category') or '').strip(),
+        }
+    except (json.JSONDecodeError, ValueError) as e:
+        log.warning(f'IMAGE_HINTS 파싱 실패 ({e}) — 빈 hints 로 폴백')
+        return cleaned, {}
 
 # 카테고리별 검증 대상 스펙 키 (본문에 언급되어야 하는 핵심 수치)
 _KEY_SPECS_BY_CATEGORY = {
@@ -71,8 +119,8 @@ def generate_spec_post(product: dict) -> str:
 # 기술정보 글
 # ──────────────────────────────────────────────────────────
 
-def generate_tech_post(topic: dict) -> str:
-    """기술 정보 주제로 교육 콘텐츠 HTML 본문 생성."""
+def generate_tech_post(topic: dict) -> tuple[str, dict]:
+    """기술 정보 주제로 교육 콘텐츠 HTML 본문 생성. 반환: (html, image_hints)."""
     prompt = f"""다음 주제로 전자기기 기술 정보 블로그 포스트 본문을 한국어 HTML로 작성해줘.
 
 주제: {topic['title']}
@@ -86,8 +134,9 @@ def generate_tech_post(topic: dict) -> str:
 - 광고성 문구, 구매 링크 절대 포함하지 말 것
 - 면책 안내문 포함하지 말 것
 - 분량: 800~1200자 한국어
-"""
-    return _run_claude(prompt)
+{_IMAGE_HINTS_INSTRUCTION}"""
+    raw = _run_claude(prompt)
+    return _extract_image_hints(raw)
 
 
 # ──────────────────────────────────────────────────────────
@@ -142,8 +191,8 @@ def verify_tech_content(html: str) -> tuple[bool, str]:
 # 트렌드 글
 # ──────────────────────────────────────────────────────────
 
-def generate_trend_post(topic: dict) -> str:
-    """트렌드 주제로 시의성 있는 블로그 포스트 HTML 생성."""
+def generate_trend_post(topic: dict) -> tuple[str, dict]:
+    """트렌드 주제로 시의성 있는 블로그 포스트 HTML 생성. 반환: (html, image_hints)."""
     context = topic.get('context', '')
     prompt = f"""다음 IT/전자기기 트렌드 주제로 시의성 있는 블로그 포스트 본문을 한국어 HTML로 작성해줘.
 
@@ -158,8 +207,9 @@ def generate_trend_post(topic: dict) -> str:
 - 특정 기업의 광고성 문구, 구매 유도 문구 금지
 - 면책 안내문 포함하지 말 것 (템플릿에서 자동 추가)
 - 분량: 700~1000자 한국어
-"""
-    return _run_claude(prompt)
+{_IMAGE_HINTS_INSTRUCTION}"""
+    raw = _run_claude(prompt)
+    return _extract_image_hints(raw)
 
 
 def verify_trend_content(html: str) -> tuple[bool, str]:
@@ -170,3 +220,91 @@ def verify_trend_content(html: str) -> tuple[bool, str]:
     if '쿠팡' in html or '구매하기' in html or '최저가' in html:
         return False, '광고성 문구 포함'
     return True, ''
+
+
+# ──────────────────────────────────────────────────────────
+# 이미지 적합도 판정 (비전 게이트)
+# ──────────────────────────────────────────────────────────
+
+_VISION_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+
+
+def check_image_fits(image_url: str, topic: str, timeout_sec: int = 60) -> bool:
+    """이미지 URL 이 `topic` 에 적합한지 Claude 비전으로 판정.
+
+    업로드 직전 게이트로 사용. 판정 결과:
+      - True  → 적합 (또는 판정 불가 → fail-open 으로 통과)
+      - False → 부적합 → 다음 후보로
+
+    실패/타임아웃/네트워크 오류 시 **fail-open(True)**: 단일 글리치로
+    전체 발행이 막히지 않게. 환경변수 `VISION_CHECK_ENABLED=0` 으로 비활성화 가능.
+    """
+    if os.getenv('VISION_CHECK_ENABLED', '1') == '0':
+        return True
+    if not image_url or not topic:
+        return True
+
+    # 1) 다운로드
+    try:
+        r = requests.get(image_url, headers={'User-Agent': _VISION_UA}, timeout=15)
+        r.raise_for_status()
+        content = r.content
+    except Exception as e:
+        log.warning(f'[vision] 다운로드 실패 → fail-open: {e}')
+        return True
+
+    # 2) 임시 파일로 저장 (Claude CLI Read 툴 입력용)
+    ext = image_url.split('?')[0].rsplit('.', 1)[-1].lower()
+    if ext not in ('jpg', 'jpeg', 'png', 'webp'):
+        ext = 'jpg'
+    tmp_name = f'vision_{hashlib.md5(image_url.encode()).hexdigest()[:12]}.{ext}'
+    tmp_path = os.path.join(tempfile.gettempdir(), tmp_name)
+    try:
+        with open(tmp_path, 'wb') as f:
+            f.write(content)
+    except Exception as e:
+        log.warning(f'[vision] 임시 파일 작성 실패 → fail-open: {e}')
+        return True
+
+    try:
+        prompt = (
+            f'Read the image at {tmp_path} using the Read tool.\n\n'
+            f'Task: Decide whether this image is a suitable featured/cover image '
+            f'for a Korean blog post about the topic below.\n\n'
+            f'Topic: {topic}\n\n'
+            f'Answer "no" if ANY of these apply:\n'
+            f'- The image shows a wrong product category '
+            f'(e.g., a fan when the topic is an air conditioner).\n'
+            f'- The image is an abstract stock photo without the actual subject.\n'
+            f'- The image shows only text, logo, or watermark without the product.\n'
+            f'- The image is blurry, clearly low quality, or heavily watermarked.\n\n'
+            f'Otherwise answer "yes".\n\n'
+            f'Reply with exactly one word: yes or no. No explanation.'
+        )
+        result = subprocess.run(
+            [CLAUDE_BIN, '--model', VISION_MODEL, '-p', prompt,
+             '--allowed-tools', 'Read'],
+            capture_output=True, text=True, timeout=timeout_sec,
+        )
+        raw = (result.stdout or '').strip().lower()
+        m = re.search(r'[a-z]+', raw)
+        first = m.group(0) if m else ''
+        if first == 'no':
+            log.info(f'[vision] 거부 topic="{topic[:40]}" url={image_url[:70]}')
+            return False
+        if first == 'yes':
+            return True
+        # 모호한 응답 → fail-open
+        log.warning(f'[vision] 모호한 응답 "{raw[:80]}" → fail-open')
+        return True
+    except subprocess.TimeoutExpired:
+        log.warning(f'[vision] 타임아웃({timeout_sec}s) → fail-open: {image_url[:70]}')
+        return True
+    except Exception as e:
+        log.warning(f'[vision] CLI 오류 → fail-open: {e}')
+        return True
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass

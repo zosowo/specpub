@@ -6,6 +6,7 @@ from datetime import datetime
 
 BASE_DIR     = os.path.dirname(__file__)
 QUEUE_DIR    = os.path.join(BASE_DIR, 'queue')
+PENDING_DIR  = os.path.join(BASE_DIR, 'queue_pending')
 PUBLISHED_F  = os.path.join(BASE_DIR, 'published.json')
 
 
@@ -106,6 +107,31 @@ def delete_queue_file(path: str):
         _cleanup_empty_queue_dirs()
     except OSError:
         pass
+
+
+def move_to_pending(path: str) -> str:
+    """큐 파일을 pending 디렉토리로 이동 (발행 실패 시 재시도 보류용).
+
+    D2 런타임 롤오버에서 사용. 다음 발행 주기에는 이 파일이 후보에서 빠짐.
+    """
+    os.makedirs(PENDING_DIR, exist_ok=True)
+    new_path = os.path.join(PENDING_DIR, os.path.basename(path))
+    # 이름 충돌 방지
+    if os.path.exists(new_path):
+        base, ext = os.path.splitext(new_path)
+        i = 2
+        while os.path.exists(f'{base}_{i}{ext}'):
+            i += 1
+        new_path = f'{base}_{i}{ext}'
+    os.rename(path, new_path)
+    _cleanup_empty_queue_dirs()
+    return new_path
+
+
+def pending_count() -> int:
+    if not os.path.exists(PENDING_DIR):
+        return 0
+    return len(glob.glob(os.path.join(PENDING_DIR, '*.json')))
 
 
 def queue_count() -> int:

@@ -155,85 +155,79 @@ def fetch_google_news_rss(per_feed: int = 8) -> list[dict]:
 
 
 # ──────────────────────────────────────────────────────────
-# 1-c. 네이버 데이터랩 쇼핑인사이트 (키·시크릿 필요)
+# 1-c. 네이버 뉴스 검색 API (Client ID/Secret 필요)
 # ──────────────────────────────────────────────────────────
 #
-# developers.naver.com 앱 등록 + DataLab 권한 필요. 없으면 skip (조용히).
-# 검색어트렌드 API 는 "키워드 지정" 필요 → 탐색 용도 아님.
-# 여기선 쇼핑인사이트의 category top keywords 를 활용.
+# DataLab 은 탐색(discovery)에 부적합 — 지정 키워드의 추이만 제공.
+# 대신 '네이버 뉴스 검색 API' 로 범용 시드 쿼리별 최신 뉴스 제목을 수집.
+# 결과 title 이 HTML(<b>태그 등) 포함이라 정리 후 사용.
+#
+# developers.naver.com 앱 등록 — 검색 API(search.news) 권한 필요.
 
 _NAVER_CLIENT_ID     = os.getenv('NAVER_CLIENT_ID', '').strip()
 _NAVER_CLIENT_SECRET = os.getenv('NAVER_CLIENT_SECRET', '').strip()
 
-# 쇼핑 인사이트 상위 카테고리 (네이버 쇼핑 cid) — 범용·안전한 것만
-_NAVER_CATEGORIES = [
-    ('50000000', '패션의류'),
-    ('50000001', '패션잡화'),
-    ('50000003', '디지털/가전'),
-    ('50000004', '가구/인테리어'),
-    ('50000005', '출산/육아'),
-    ('50000006', '식품'),
-    ('50000008', '생활/건강'),
-    ('50000009', '여가/생활편의'),
+# 범용·안전 시드 쿼리 (쿼리당 네이버 뉴스 10건 → 7쿼리 ≈ 70건 풀)
+_NAVER_NEWS_QUERIES = [
+    '신제품',      # 전자기기·생활가전 출시
+    '가전 할인',   # 쇼핑·세일
+    '여행 추천',   # 여행
+    '레시피',      # 요리·맛집
+    '주식 전망',   # 재테크
+    '자동차 신차', # 자동차
+    '건강',        # 건강·운동
 ]
 
+_HTML_TAG_RE = re.compile(r'<[^>]+>')
 
-def fetch_naver_shopping_top(per_cat: int = 5) -> list[dict]:
-    """네이버 쇼핑인사이트 카테고리별 상위 검색 키워드. 크레덴셜 없으면 skip."""
+
+def _clean_naver_title(raw: str) -> str:
+    t = _html.unescape(_HTML_TAG_RE.sub('', raw or ''))
+    return re.sub(r'\s+', ' ', t).strip()
+
+
+def fetch_naver_news_search(per_query: int = 10) -> list[dict]:
+    """네이버 뉴스 검색 API 로 시드 쿼리별 최신 뉴스 제목 수집."""
     if not (_NAVER_CLIENT_ID and _NAVER_CLIENT_SECRET):
-        log.debug('NAVER_CLIENT_ID/SECRET 미설정 — DataLab skip')
+        log.debug('NAVER_CLIENT_ID/SECRET 미설정 — Naver News skip')
         return []
-
-    from datetime import date, timedelta
-    end   = date.today()
-    start = end - timedelta(days=7)
 
     out: list[dict] = []
     seen: set[str] = set()
-    for cid, cname in _NAVER_CATEGORIES:
+    for q in _NAVER_NEWS_QUERIES:
         try:
-            r = requests.post(
-                'https://openapi.naver.com/v1/datalab/shopping/category/keywords',
+            r = requests.get(
+                'https://openapi.naver.com/v1/search/news.json',
                 headers={
                     'X-Naver-Client-Id':     _NAVER_CLIENT_ID,
                     'X-Naver-Client-Secret': _NAVER_CLIENT_SECRET,
-                    'Content-Type':          'application/json',
                 },
-                json={
-                    'startDate': start.strftime('%Y-%m-%d'),
-                    'endDate':   end.strftime('%Y-%m-%d'),
-                    'timeUnit':  'date',
-                    'category':  cid,
-                    'keyword':   [{'name': cname, 'param': [cname]}],
-                    'device':    '',
-                    'gender':    '',
-                    'ages':      [],
-                },
-                timeout=10,
+                params={'query': q, 'display': per_query, 'sort': 'date'},
+                timeout=8,
             )
-            # 카테고리별 top keywords 는 별도 엔드포인트가 필요할 수 있음.
-            # 스캐폴드 단계 — 실패해도 조용히 넘어감.
             if r.status_code != 200:
-                log.debug(f'DataLab {cname} {r.status_code}: {r.text[:120]}')
+                log.debug(f'[naver-news] {q} {r.status_code}: {r.text[:120]}')
                 continue
-            # 응답에서 title 필드 추출 (그 자체가 카테고리명이므로 seed 로 사용)
-            data = r.json()
-            for result in data.get('results', [])[:per_cat]:
-                kw = str(result.get('title', '')).strip()
-                n = _normalize(kw)
-                if not n or n in seen or len(kw) < 3:
-                    continue
-                seen.add(n)
-                out.append({
-                    'keyword': kw,
-                    'source':  f'naver_shopping_{cname}',
-                    'related': [],
-                })
+            items = r.json().get('items', [])
         except Exception as e:
-            log.debug(f'DataLab {cname} 오류: {e}')
+            log.debug(f'[naver-news] {q} 오류: {e}')
             continue
+
+        for it in items:
+            title = _clean_naver_title(it.get('title', ''))
+            if len(title) < 4 or len(title) > 80:
+                continue
+            n = _normalize(title)
+            if n in seen:
+                continue
+            seen.add(n)
+            out.append({
+                'keyword': title,
+                'source':  f'naver_news_{q}',
+                'related': [],
+            })
     if out:
-        log.info(f'Naver DataLab Shopping: {len(out)}개')
+        log.info(f'Naver News Search: {len(out)}개 ({len(_NAVER_NEWS_QUERIES)}쿼리)')
     return out
 
 
@@ -453,7 +447,7 @@ def collect_hot_keywords(target_count: int = 6) -> list[dict]:
     for item in fetch_youtube_trending(limit=20):
         _add(item)
 
-    for item in fetch_naver_shopping_top(per_cat=5):
+    for item in fetch_naver_news_search(per_query=8):
         _add(item)
 
     for item in fetch_google_trends(limit=30):
